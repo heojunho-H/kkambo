@@ -26,10 +26,8 @@ export default function App() {
         setDisplayedText(bubbleText.slice(0, i));
         if (i >= bubbleText.length) {
           clearInterval(interval);
-          // 완성 후 3초 뒤 사라짐
           timeout = setTimeout(() => {
             setBubbleVisible(false);
-            // 사라진 후 5초 뒤 다시 시작
             timeout = setTimeout(startTyping, 5000);
           }, 3000);
         }
@@ -58,7 +56,7 @@ export default function App() {
   };
 
   return (
-    <div className="relative min-h-screen bg-[#050505] text-white overflow-hidden font-sans">
+    <div className="relative min-h-screen bg-white overflow-hidden font-sans">
       {/* 3D Background */}
       <div className="absolute inset-0 z-0 pointer-events-auto overflow-hidden">
         <motion.div
@@ -80,15 +78,15 @@ export default function App() {
           style={{ perspective: 800, transformOrigin: "center 40%" }}
           className="absolute -inset-[100px]"
         >
-          <iframe 
-            src='https://my.spline.design/genkubgreetingrobot-Ucp7PWPw2Qa19dJxWCY6sMTW/' 
-            frameBorder='0' 
-            width='100%' 
+          <iframe
+            src='https://my.spline.design/genkubgreetingrobot-Ucp7PWPw2Qa19dJxWCY6sMTW/'
+            frameBorder='0'
+            width='100%'
             height='100%'
             className="w-full h-full"
             title="3D Robot Background"
           ></iframe>
-          {/* Speech Bubble - inside robot container for perfect sync */}
+          {/* Speech Bubble */}
           <motion.div
             initial={{ opacity: 0, scale: 0.8 }}
             animate={
@@ -108,22 +106,22 @@ export default function App() {
         </motion.div>
       </div>
 
-      {/* Gradient Overlays */}
+      {/* Gradient Overlays — 흰 배경 위에 검정 그라데이션 */}
       <motion.div
         animate={{ opacity: isListening ? 0.15 : 0.8 }}
         transition={{ duration: 1.2 }}
-        className="absolute inset-0 bg-gradient-to-b from-[#050505] via-transparent to-[#050505] z-0 pointer-events-none"
+        className="absolute inset-0 bg-gradient-to-b from-black via-transparent to-black z-0 pointer-events-none"
       />
       <motion.div
         animate={{ opacity: isListening ? 0.15 : 0.6 }}
         transition={{ duration: 1.2 }}
-        className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,#050505_100%)] z-0 pointer-events-none"
+        className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,black_100%)] z-0 pointer-events-none"
       />
 
-      {/* Navbar */}
+      {/* Navbar — 상단 검정 그라데이션 위 → 흰 텍스트 유지 */}
       <nav className="absolute top-0 w-full px-6 py-5 z-20 pointer-events-auto flex justify-between items-center">
-        <div className="flex items-center gap-2 font-bold text-xl tracking-tighter">
-          <Bot className="w-6 h-6 text-blue-500" />
+        <div className="flex items-center gap-2 font-bold text-xl tracking-tighter text-white">
+          <Bot className="w-6 h-6 text-blue-400" />
           <span>Kkambo</span>
         </div>
         <div className="flex items-center gap-3">
@@ -131,13 +129,13 @@ export default function App() {
             <Sparkles className="w-4 h-4" />
             Premium
           </button>
-          <button className="px-5 py-2.5 text-sm font-medium bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 rounded-full transition-colors">
+          <button className="px-5 py-2.5 text-sm font-medium bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/20 rounded-full transition-colors text-white">
             로그인
           </button>
         </div>
       </nav>
 
-      {/* Hero Content */}
+      {/* Hero Content — 중앙은 그라데이션 투명 → 흰 배경 → 어두운 텍스트 사용 */}
       <div className="relative z-10 flex flex-col items-center justify-center min-h-screen px-4 pointer-events-none">
         <MetricsPanel visible={isListening} />
         <motion.div
@@ -150,22 +148,22 @@ export default function App() {
           <motion.h1
             animate={{ opacity: isListening ? 0 : 1, y: isListening ? -30 : 0 }}
             transition={{ duration: 0.6 }}
-            className="text-3xl md:text-5xl lg:text-[3.5rem] font-black tracking-tight mb-5 leading-tight drop-shadow-[0_4px_30px_rgba(0,0,0,0.9)]"
+            className="text-3xl md:text-5xl lg:text-[3.5rem] font-black tracking-tight mb-5 leading-tight text-gray-900"
           >
             가르치면서 배우는<br />
             가장 똑똑한 학습법
           </motion.h1>
-          
+
           {/* Sub Headline */}
           <motion.p
             animate={{ opacity: isListening ? 0 : 1, y: isListening ? -20 : 0 }}
             transition={{ duration: 0.6, delay: 0.1 }}
-            className="text-sm md:text-lg text-gray-400 mb-10 max-w-xl mx-auto leading-relaxed drop-shadow-[0_2px_10px_rgba(0,0,0,0.8)]"
+            className="text-sm md:text-lg text-gray-600 mb-10 max-w-xl mx-auto leading-relaxed"
           >
             눈으로만 읽는 공부는 끝.<br className="md:hidden" />{' '}
             나만의 AI 제자 깜보에게 설명하며 완벽하게 이해하세요.
           </motion.p>
-          
+
           {/* Search Input Bar */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -174,7 +172,7 @@ export default function App() {
             className="w-full max-w-2xl pointer-events-auto"
             style={{ pointerEvents: isListening ? 'none' : 'auto' }}
           >
-            <div className="relative flex items-center bg-white/[0.08] backdrop-blur-xl border border-white/[0.12] rounded-2xl p-2 transition-all focus-within:border-blue-500/50 focus-within:bg-white/[0.12] focus-within:shadow-[0_0_40px_rgba(59,130,246,0.15)]">
+            <div className="relative flex items-center bg-black/[0.04] backdrop-blur-xl border border-black/[0.1] rounded-2xl p-2 transition-all focus-within:border-blue-500/50 focus-within:bg-black/[0.07] focus-within:shadow-[0_0_40px_rgba(59,130,246,0.12)]">
               <input
                 type="file"
                 ref={fileInputRef}
@@ -186,8 +184,8 @@ export default function App() {
                 onClick={() => fileInputRef.current?.click()}
                 className="flex-1 flex items-center gap-3 px-4 py-3 text-left"
               >
-                <Upload className="w-5 h-5 text-white/40 flex-shrink-0" />
-                <span className={fileName ? 'text-white text-sm md:text-base' : 'text-white/60 text-sm md:text-base'}>
+                <Upload className="w-5 h-5 text-gray-400 flex-shrink-0" />
+                <span className={fileName ? 'text-gray-900 text-sm md:text-base' : 'text-gray-400 text-sm md:text-base'}>
                   {fileName || '오늘 가르칠 파일을 업로드하세요'}
                 </span>
               </button>
@@ -205,7 +203,7 @@ export default function App() {
                 <button
                   key={chip}
                   onClick={() => setInputValue(chip.replace(/^[^\s]+\s/, ''))}
-                  className="px-3.5 py-1.5 text-xs text-gray-400 bg-white/[0.05] hover:bg-white/[0.1] border border-white/[0.08] rounded-full transition-colors"
+                  className="px-3.5 py-1.5 text-xs text-gray-500 bg-black/[0.04] hover:bg-black/[0.08] border border-black/[0.07] rounded-full transition-colors"
                 >
                   {chip}
                 </button>
