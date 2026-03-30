@@ -161,7 +161,9 @@ export default function App() {
     setIsListening(true);
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const ws = new WebSocket(`${proto}//${window.location.host}/ws/live`);
+    const wsUrl = import.meta.env.VITE_BACKEND_WS_URL
+      ?? `${proto}//${window.location.host}/ws/live`;
+    const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
     ws.onmessage = (e) => {
