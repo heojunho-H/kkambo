@@ -1,59 +1,210 @@
-import { motion } from 'motion/react';
-import { Sparkles, Bot, Send, Upload } from 'lucide-react';
-import { useState, useEffect, useRef } from 'react';
+import { motion, AnimatePresence } from 'motion/react';
+import { Sparkles, Bot, Send, Upload, Mic, MicOff, X } from 'lucide-react';
+import { useState, useEffect, useRef, useCallback } from 'react';
 import { MetricsPanel } from './components/metrics-panel';
 
+// ── 오디오 유틸 ──────────────────────────────────────────────
+function float32ToBase64(float32: Float32Array): string {
+  const int16 = new Int16Array(float32.length);
+  for (let i = 0; i < float32.length; i++) {
+    int16[i] = Math.max(-32768, Math.min(32767, Math.round(float32[i] * 32768)));
+  }
+  const bytes = new Uint8Array(int16.buffer);
+  let bin = '';
+  for (let i = 0; i < bytes.byteLength; i++) bin += String.fromCharCode(bytes[i]);
+  return btoa(bin);
+}
+
+function base64ToFloat32(b64: string): Float32Array {
+  const bin = atob(b64);
+  const bytes = new Uint8Array(bin.length);
+  for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+  const int16 = new Int16Array(bytes.buffer);
+  const f32 = new Float32Array(int16.length);
+  for (let i = 0; i < int16.length; i++) f32[i] = int16[i] / 32768;
+  return f32;
+}
+
+type SessionState = 'idle' | 'connecting' | 'active' | 'error';
+
 export default function App() {
-  const [inputValue, setInputValue] = useState('');
-  const [isListening, setIsListening] = useState(false);
   const [fileName, setFileName] = useState('');
+  const [isListening, setIsListening] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
+  // 음성 세션 상태
+  const [sessionState, setSessionState] = useState<SessionState>('idle');
+  const [isRecording, setIsRecording] = useState(false);
+  const [isKkamboSpeaking, setIsKkamboSpeaking] = useState(false);
+  const [transcript, setTranscript] = useState('');
+
+  // refs
+  const wsRef = useRef<WebSocket | null>(null);
+  const micCtxRef = useRef<AudioContext | null>(null);
+  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const streamRef = useRef<MediaStream | null>(null);
+  const playCtxRef = useRef<AudioContext | null>(null);
+  const audioQueueRef = useRef<Float32Array[]>([]);
+  const isPlayingRef = useRef(false);
+
+  // 말풍선 타이핑 (대기 상태용)
   const bubbleText = '안녕 나는 깜보야! 나를 학습시켜줘~';
   const [displayedText, setDisplayedText] = useState('');
   const [bubbleVisible, setBubbleVisible] = useState(false);
 
   useEffect(() => {
-    let timeout: ReturnType<typeof setTimeout>;
-    let interval: ReturnType<typeof setInterval>;
-
+    if (isListening) return;
+    let t: ReturnType<typeof setTimeout>;
+    let iv: ReturnType<typeof setInterval>;
     const startTyping = () => {
       let i = 0;
       setDisplayedText('');
       setBubbleVisible(true);
-      interval = setInterval(() => {
+      iv = setInterval(() => {
         i++;
         setDisplayedText(bubbleText.slice(0, i));
         if (i >= bubbleText.length) {
-          clearInterval(interval);
-          timeout = setTimeout(() => {
+          clearInterval(iv);
+          t = setTimeout(() => {
             setBubbleVisible(false);
-            timeout = setTimeout(startTyping, 5000);
+            t = setTimeout(startTyping, 5000);
           }, 3000);
         }
       }, 80);
     };
+    t = setTimeout(startTyping, 1700);
+    return () => { clearTimeout(t); clearInterval(iv); };
+  }, [isListening]);
 
-    timeout = setTimeout(startTyping, 1700);
+  // ── 오디오 재생 큐 ─────────────────────────────────────────
+  const playNext = useCallback(() => {
+    if (audioQueueRef.current.length === 0) {
+      isPlayingRef.current = false;
+      setIsKkamboSpeaking(false);
+      return;
+    }
+    isPlayingRef.current = true;
+    setIsKkamboSpeaking(true);
 
-    return () => {
-      clearTimeout(timeout);
-      clearInterval(interval);
-    };
+    if (!playCtxRef.current) playCtxRef.current = new AudioContext();
+    const ctx = playCtxRef.current;
+    const data = audioQueueRef.current.shift()!;
+    const buf = ctx.createBuffer(1, data.length, 24000);
+    buf.getChannelData(0).set(data);
+    const src = ctx.createBufferSource();
+    src.buffer = buf;
+    src.connect(ctx.destination);
+    src.onended = playNext;
+    src.start();
   }, []);
 
-  const handleTeach = () => {
-    if (fileName.trim()) {
-      setIsListening(true);
+  const enqueueAudio = useCallback((b64: string) => {
+    audioQueueRef.current.push(base64ToFloat32(b64));
+    if (!isPlayingRef.current) playNext();
+  }, [playNext]);
+
+  // ── 마이크 시작 ────────────────────────────────────────────
+  const startMic = useCallback(async () => {
+    try {
+      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      streamRef.current = stream;
+
+      const ctx = new AudioContext({ sampleRate: 16000 });
+      micCtxRef.current = ctx;
+
+      const source = ctx.createMediaStreamSource(stream);
+      // @ts-expect-error — ScriptProcessorNode deprecated but supported
+      const processor = ctx.createScriptProcessor(2048, 1, 1);
+      processorRef.current = processor;
+
+      processor.onaudioprocess = (e: AudioProcessingEvent) => {
+        const ws = wsRef.current;
+        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        const f32 = e.inputBuffer.getChannelData(0);
+        ws.send(JSON.stringify({ type: 'audio', data: float32ToBase64(f32) }));
+      };
+
+      source.connect(processor);
+      processor.connect(ctx.destination);
+      setIsRecording(true);
+    } catch {
+      setSessionState('error');
     }
+  }, []);
+
+  // ── 세션 종료 ──────────────────────────────────────────────
+  const stopSession = useCallback(() => {
+    streamRef.current?.getTracks().forEach(t => t.stop());
+    processorRef.current?.disconnect();
+    micCtxRef.current?.close();
+    playCtxRef.current?.close();
+    wsRef.current?.close();
+
+    wsRef.current = null;
+    micCtxRef.current = null;
+    processorRef.current = null;
+    streamRef.current = null;
+    playCtxRef.current = null;
+    audioQueueRef.current = [];
+    isPlayingRef.current = false;
+
+    setIsRecording(false);
+    setIsKkamboSpeaking(false);
+    setTranscript('');
+    setSessionState('idle');
+    setIsListening(false);
+  }, []);
+
+  // ── 세션 시작 ──────────────────────────────────────────────
+  const startSession = useCallback(async (file: string) => {
+    setSessionState('connecting');
+    setIsListening(true);
+
+    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+    const ws = new WebSocket(`${proto}//${window.location.host}/ws/live`);
+    wsRef.current = ws;
+
+    ws.onmessage = (e) => {
+      const msg = JSON.parse(e.data) as {
+        type: string; data?: string; text?: string; message?: string;
+      };
+
+      if (msg.type === 'ready') {
+        setSessionState('active');
+        // 파일명 컨텍스트 전달 후 마이크 시작
+        ws.send(JSON.stringify({ type: 'context', fileName: file }));
+        startMic();
+      } else if (msg.type === 'audio' && msg.data) {
+        enqueueAudio(msg.data);
+      } else if (msg.type === 'transcript' && msg.text) {
+        setTranscript(msg.text);
+      } else if (msg.type === 'turnComplete') {
+        // 깜보 발화 완료 — 3초 후 말풍선 비우기
+        setTimeout(() => setTranscript(''), 3000);
+      } else if (msg.type === 'error') {
+        console.error('Live 오류:', msg.message);
+        setSessionState('error');
+      }
+    };
+
+    ws.onclose = () => {
+      if (sessionState !== 'idle') stopSession();
+    };
+    ws.onerror = () => setSessionState('error');
+  }, [startMic, enqueueAudio, stopSession, sessionState]);
+
+  const handleTeach = () => {
+    if (!fileName.trim()) return;
+    startSession(fileName);
   };
 
-  const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
-    const file = e.target.files?.[0];
-    if (file) {
-      setFileName(file.name);
-    }
-  };
+  // 말풍선 텍스트
+  const bubbleContent = isListening
+    ? (transcript || (sessionState === 'connecting' ? '연결 중...' : ''))
+    : (bubbleVisible ? displayedText : '');
+  const truncatedBubble = bubbleContent.length > 55
+    ? bubbleContent.slice(0, 55) + '…'
+    : bubbleContent;
 
   return (
     <div className="relative min-h-screen bg-white overflow-hidden font-sans">
@@ -70,43 +221,48 @@ export default function App() {
               ? {
                   x: { duration: 1.2, ease: [0.16, 1, 0.3, 1] },
                   scale: { duration: 1.2, ease: [0.16, 1, 0.3, 1] },
-                  y: { duration: 1.2, repeat: Infinity, ease: "easeInOut", repeatDelay: 0.3 },
-                  rotateX: { duration: 1.2, repeat: Infinity, ease: "easeInOut", repeatDelay: 0.3 },
+                  y: { duration: 1.2, repeat: Infinity, ease: 'easeInOut', repeatDelay: 0.3 },
+                  rotateX: { duration: 1.2, repeat: Infinity, ease: 'easeInOut', repeatDelay: 0.3 },
                 }
-              : { x: { duration: 10, repeat: Infinity, ease: "easeInOut" } }
+              : { x: { duration: 10, repeat: Infinity, ease: 'easeInOut' } }
           }
-          style={{ perspective: 800, transformOrigin: "center 40%" }}
+          style={{ perspective: 800, transformOrigin: 'center 40%' }}
           className="absolute -inset-[100px]"
         >
           <iframe
-            src='https://my.spline.design/genkubgreetingrobot-Ucp7PWPw2Qa19dJxWCY6sMTW/'
-            frameBorder='0'
-            width='100%'
-            height='100%'
+            src="https://my.spline.design/genkubgreetingrobot-Ucp7PWPw2Qa19dJxWCY6sMTW/"
+            frameBorder="0"
+            width="100%"
+            height="100%"
             className="w-full h-full"
             title="3D Robot Background"
-          ></iframe>
-          {/* Speech Bubble */}
-          <motion.div
-            initial={{ opacity: 0, scale: 0.8 }}
-            animate={
-              isListening
-                ? { opacity: 1, scale: 1 }
-                : { opacity: bubbleVisible ? 1 : 0, scale: bubbleVisible ? 1 : 0.8 }
-            }
-            transition={{ duration: 0.4 }}
-            className="absolute top-[20%] left-[58%] z-10 pointer-events-none"
-          >
-            <div className="relative bg-white text-black px-7 py-4 rounded-2xl shadow-lg text-[21px] font-medium whitespace-nowrap">
-              {isListening ? '음.. 음.. 열심히 듣고 있어! 🤔' : displayedText}
-              {!isListening && <span className="inline-block w-[2px] h-[1em] bg-black/70 align-middle ml-[1px] animate-pulse" />}
-              <div className="absolute -bottom-2 left-6 w-4 h-4 bg-white rotate-45 rounded-sm"></div>
-            </div>
-          </motion.div>
+          />
+
+          {/* 말풍선 */}
+          <AnimatePresence>
+            {bubbleContent && (
+              <motion.div
+                key="bubble"
+                initial={{ opacity: 0, scale: 0.85, y: 4 }}
+                animate={{ opacity: 1, scale: 1, y: 0 }}
+                exit={{ opacity: 0, scale: 0.85, y: 4 }}
+                transition={{ duration: 0.25 }}
+                className="absolute top-[20%] left-[58%] z-10 pointer-events-none"
+              >
+                <div className="relative bg-white text-black px-5 py-3 rounded-2xl shadow-lg text-[18px] font-medium max-w-[280px] leading-snug">
+                  {truncatedBubble}
+                  {isKkamboSpeaking && (
+                    <span className="inline-block w-[2px] h-[1em] bg-black/60 align-middle ml-1 animate-pulse" />
+                  )}
+                  <div className="absolute -bottom-2 left-6 w-4 h-4 bg-white rotate-45 rounded-sm" />
+                </div>
+              </motion.div>
+            )}
+          </AnimatePresence>
         </motion.div>
       </div>
 
-      {/* Gradient Overlays — 흰 배경 위에 검정 그라데이션 */}
+      {/* Gradient Overlays */}
       <motion.div
         animate={{ opacity: isListening ? 0.15 : 0.8 }}
         transition={{ duration: 1.2 }}
@@ -118,7 +274,7 @@ export default function App() {
         className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,black_100%)] z-0 pointer-events-none"
       />
 
-      {/* Navbar — 상단 검정 그라데이션 위 → 흰 텍스트 유지 */}
+      {/* Navbar */}
       <nav className="absolute top-0 w-full px-6 py-5 z-20 pointer-events-auto flex justify-between items-center">
         <div className="flex items-center gap-2 font-bold text-xl tracking-tighter text-white">
           <Bot className="w-6 h-6 text-blue-400" />
@@ -135,83 +291,143 @@ export default function App() {
         </div>
       </nav>
 
-      {/* Hero Content — 중앙은 그라데이션 투명 → 흰 배경 → 어두운 텍스트 사용 */}
-      <div className="relative z-10 flex flex-col items-center justify-center min-h-screen px-4 pointer-events-none">
-        <MetricsPanel visible={isListening} />
-        <motion.div
-          initial={{ opacity: 0, y: 40 }}
-          animate={{ opacity: 1, y: 0 }}
-          transition={{ duration: 1, delay: 0.2, ease: [0.16, 1, 0.3, 1] }}
-          className="text-center max-w-3xl mx-auto flex flex-col items-center w-full"
-        >
-          {/* Main Headline */}
-          <motion.h1
-            animate={{ opacity: isListening ? 0 : 1, y: isListening ? -30 : 0 }}
-            transition={{ duration: 0.6 }}
-            className="text-3xl md:text-5xl lg:text-[3.5rem] font-black tracking-tight mb-5 leading-tight text-gray-900"
-          >
-            가르치면서 배우는<br />
-            가장 똑똑한 학습법
-          </motion.h1>
-
-          {/* Sub Headline */}
-          <motion.p
-            animate={{ opacity: isListening ? 0 : 1, y: isListening ? -20 : 0 }}
-            transition={{ duration: 0.6, delay: 0.1 }}
-            className="text-sm md:text-lg text-gray-600 mb-10 max-w-xl mx-auto leading-relaxed"
-          >
-            눈으로만 읽는 공부는 끝.<br className="md:hidden" />{' '}
-            나만의 AI 제자 깜보에게 설명하며 완벽하게 이해하세요.
-          </motion.p>
-
-          {/* Search Input Bar */}
+      {/* ── 대기 화면 (히어로) ── */}
+      <AnimatePresence>
+        {!isListening && (
           <motion.div
-            initial={{ opacity: 0, y: 20 }}
-            animate={{ opacity: isListening ? 0 : 1, y: isListening ? 30 : 0 }}
-            transition={{ duration: 0.6, delay: 0.15 }}
-            className="w-full max-w-2xl pointer-events-auto"
-            style={{ pointerEvents: isListening ? 'none' : 'auto' }}
+            key="hero"
+            initial={{ opacity: 1, y: 0 }}
+            exit={{ opacity: 0, y: -20 }}
+            transition={{ duration: 0.5 }}
+            className="relative z-10 flex flex-col items-center justify-center min-h-screen px-4 pointer-events-none"
           >
-            <div className="relative flex items-center bg-black/[0.04] backdrop-blur-xl border border-black/[0.1] rounded-2xl p-2 transition-all focus-within:border-blue-500/50 focus-within:bg-black/[0.07] focus-within:shadow-[0_0_40px_rgba(59,130,246,0.12)]">
-              <input
-                type="file"
-                ref={fileInputRef}
-                onChange={handleFileChange}
-                className="hidden"
-                accept=".pdf,.doc,.docx,.txt,.ppt,.pptx,.hwp,.md"
-              />
-              <button
-                onClick={() => fileInputRef.current?.click()}
-                className="flex-1 flex items-center gap-3 px-4 py-3 text-left"
-              >
-                <Upload className="w-5 h-5 text-gray-400 flex-shrink-0" />
-                <span className={fileName ? 'text-gray-900 text-sm md:text-base' : 'text-gray-400 text-sm md:text-base'}>
-                  {fileName || '오늘 가르칠 파일을 업로드하세요'}
-                </span>
-              </button>
-              <button
-                onClick={handleTeach}
-                className="flex-shrink-0 px-5 md:px-6 py-3 bg-blue-500 hover:bg-blue-400 text-white rounded-xl font-medium text-sm md:text-base flex items-center gap-2 transition-all hover:scale-[1.02] active:scale-95"
-              >
-                깜보 가르치기
-                <Send className="w-4 h-4" />
-              </button>
-            </div>
-            {/* Helper chips */}
-            <div className="flex flex-wrap items-center justify-center gap-2 mt-4">
-              {['📘 채찍효과란?', '📐 선형계획법 설명', '🧬 DNA 복제 과정'].map((chip) => (
-                <button
-                  key={chip}
-                  onClick={() => setInputValue(chip.replace(/^[^\s]+\s/, ''))}
-                  className="px-3.5 py-1.5 text-xs text-gray-500 bg-black/[0.04] hover:bg-black/[0.08] border border-black/[0.07] rounded-full transition-colors"
-                >
-                  {chip}
-                </button>
-              ))}
+            <div className="text-center max-w-3xl mx-auto flex flex-col items-center w-full">
+              <h1 className="text-3xl md:text-5xl lg:text-[3.5rem] font-black tracking-tight mb-5 leading-tight text-gray-900">
+                가르치면서 배우는<br />
+                가장 똑똑한 학습법
+              </h1>
+              <p className="text-sm md:text-lg text-gray-600 mb-10 max-w-xl mx-auto leading-relaxed">
+                눈으로만 읽는 공부는 끝.{' '}
+                나만의 AI 제자 깜보에게 설명하며 완벽하게 이해하세요.
+              </p>
+
+              <div className="w-full max-w-2xl pointer-events-auto">
+                <div className="relative flex items-center bg-black/[0.04] backdrop-blur-xl border border-black/[0.1] rounded-2xl p-2 transition-all focus-within:border-blue-500/50 focus-within:shadow-[0_0_40px_rgba(59,130,246,0.12)]">
+                  <input
+                    type="file"
+                    ref={fileInputRef}
+                    onChange={e => setFileName(e.target.files?.[0]?.name ?? '')}
+                    className="hidden"
+                    accept=".pdf,.doc,.docx,.txt,.ppt,.pptx,.hwp,.md"
+                  />
+                  <button
+                    onClick={() => fileInputRef.current?.click()}
+                    className="flex-1 flex items-center gap-3 px-4 py-3 text-left"
+                  >
+                    <Upload className="w-5 h-5 text-gray-400 flex-shrink-0" />
+                    <span className={fileName ? 'text-gray-900 text-sm' : 'text-gray-400 text-sm'}>
+                      {fileName || '오늘 가르칠 파일을 업로드하세요'}
+                    </span>
+                  </button>
+                  <button
+                    onClick={handleTeach}
+                    className="flex-shrink-0 px-5 md:px-6 py-3 bg-blue-500 hover:bg-blue-400 text-white rounded-xl font-medium text-sm flex items-center gap-2 transition-all hover:scale-[1.02] active:scale-95"
+                  >
+                    깜보 가르치기
+                    <Send className="w-4 h-4" />
+                  </button>
+                </div>
+                <div className="flex flex-wrap items-center justify-center gap-2 mt-4">
+                  {['📘 채찍효과란?', '📐 선형계획법 설명', '🧬 DNA 복제 과정'].map(chip => (
+                    <button
+                      key={chip}
+                      className="px-3.5 py-1.5 text-xs text-gray-500 bg-black/[0.04] hover:bg-black/[0.08] border border-black/[0.07] rounded-full transition-colors"
+                    >
+                      {chip}
+                    </button>
+                  ))}
+                </div>
+              </div>
             </div>
           </motion.div>
-        </motion.div>
-      </div>
+        )}
+      </AnimatePresence>
+
+      {/* ── 음성 대화 화면 ── */}
+      <AnimatePresence>
+        {isListening && (
+          <motion.div
+            key="voice-ui"
+            initial={{ opacity: 0 }}
+            animate={{ opacity: 1 }}
+            exit={{ opacity: 0 }}
+            transition={{ duration: 0.4 }}
+            className="absolute inset-0 z-10 flex flex-col items-center justify-end pb-16 pointer-events-none"
+          >
+            {/* MetricsPanel */}
+            <MetricsPanel visible={isListening} />
+
+            {/* 상태 표시 */}
+            <motion.div
+              initial={{ opacity: 0, y: 10 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ delay: 0.3 }}
+              className="flex flex-col items-center gap-6 pointer-events-auto"
+            >
+              {/* 상태 텍스트 */}
+              <p className="text-sm text-white/60">
+                {sessionState === 'connecting' && '깜보에 연결 중...'}
+                {sessionState === 'active' && isKkamboSpeaking && '깜보가 말하는 중...'}
+                {sessionState === 'active' && !isKkamboSpeaking && isRecording && '말해봐! 듣고 있어 👂'}
+                {sessionState === 'error' && '연결 오류 — 다시 시도해줘'}
+              </p>
+
+              {/* 마이크 버튼 */}
+              <div className="relative flex items-center justify-center">
+                {/* 녹음 중 펄스 */}
+                {isRecording && (
+                  <motion.div
+                    animate={{ scale: [1, 1.4, 1], opacity: [0.4, 0, 0.4] }}
+                    transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
+                    className="absolute w-24 h-24 rounded-full bg-red-400"
+                  />
+                )}
+                {/* 깜보 말하는 중 펄스 */}
+                {isKkamboSpeaking && (
+                  <motion.div
+                    animate={{ scale: [1, 1.3, 1], opacity: [0.3, 0, 0.3] }}
+                    transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
+                    className="absolute w-24 h-24 rounded-full bg-blue-400"
+                  />
+                )}
+                <motion.button
+                  whileTap={{ scale: 0.92 }}
+                  disabled={sessionState === 'connecting'}
+                  className={`relative w-20 h-20 rounded-full flex items-center justify-center shadow-2xl transition-colors ${
+                    isRecording
+                      ? 'bg-red-500 hover:bg-red-400'
+                      : 'bg-white/20 backdrop-blur-md hover:bg-white/30 border border-white/20'
+                  } disabled:opacity-50`}
+                >
+                  {isRecording
+                    ? <MicOff className="w-8 h-8 text-white" />
+                    : <Mic className="w-8 h-8 text-white" />
+                  }
+                </motion.button>
+              </div>
+
+              {/* 종료 버튼 */}
+              <button
+                onClick={stopSession}
+                className="flex items-center gap-1.5 px-4 py-2 text-sm text-white/60 hover:text-white bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 rounded-full transition-colors"
+              >
+                <X className="w-4 h-4" />
+                대화 종료
+              </button>
+            </motion.div>
+          </motion.div>
+        )}
+      </AnimatePresence>
     </div>
   );
 }
