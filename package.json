@@ -1,0 +1,19 @@
+{
+  "name": "kkambo",
+  "version": "0.0.1",
+  "private": true,
+  "scripts": {
+    "dev": "pnpm --filter kkamboui dev",
+    "build": "pnpm --filter kkamboui build",
+    "build:backend": "pnpm --filter backend build",
+    "dev:backend": "pnpm --filter backend dev"
+  },
+  "dependencies": {
+    "firebase": "^12.11.0"
+  },
+  "pnpm": {
+    "overrides": {
+      "vite": "6.3.5"
+    }
+  }
+}
