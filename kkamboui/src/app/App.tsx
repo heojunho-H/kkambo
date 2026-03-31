@@ -204,9 +204,14 @@ export default function App() {
       setIsRecording(true);
     } catch (err) {
       console.error('[startMic] 오류:', err);
-      stopSession();
+      // 오디오 셋업 실패 — ws 세션은 유지하고 오류 상태만 표시
+      streamRef.current?.getTracks().forEach(t => t.stop());
+      streamRef.current = null;
+      micCtxRef.current?.close().catch(() => {});
+      micCtxRef.current = null;
+      setSessionState('error');
     }
-  }, [stopSession]);
+  }, []);
 
   // ── 세션 종료 ──────────────────────────────────────────────
   const stopSession = useCallback(() => {
