@@ -99,7 +99,7 @@ export default function App() {
     src.buffer = buf;
     src.connect(ctx.destination);
     src.onended = playNext;
-    src.start();
+    ctx.resume().then(() => src.start());
   }, []);
 
   const enqueueAudio = useCallback((b64: string) => {
@@ -139,7 +139,8 @@ export default function App() {
       worklet.connect(silencer);
       silencer.connect(ctx.destination);
       setIsRecording(true);
-    } catch {
+    } catch (err) {
+      console.error('[startMic] 오류:', err);
       setSessionState('error');
     }
   }, []);
