@@ -454,7 +454,7 @@ export default function App() {
                       setFileName(f?.name ?? '');
                     }}
                     className="hidden"
-                    accept=".pdf,.doc,.docx,.txt,.ppt,.pptx,.hwp,.md"
+                    accept=".pdf,.doc,.docx,.txt,.ppt,.pptx,.md"
                   />
                   <button
                     onClick={() => fileInputRef.current?.click()}
@@ -467,8 +467,8 @@ export default function App() {
                   </button>
                   <button
                     onClick={handleTeach}
-                    disabled={isUploading}
-                    className="flex-shrink-0 px-5 md:px-6 py-3 bg-blue-500 hover:bg-blue-400 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-xl font-medium text-sm flex items-center gap-2 transition-all hover:scale-[1.02] active:scale-95"
+                    disabled={!fileObj || isUploading}
+                    className="flex-shrink-0 px-5 md:px-6 py-3 bg-blue-500 hover:bg-blue-400 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl font-medium text-sm flex items-center gap-2 transition-all hover:scale-[1.02] active:scale-95"
                   >
                     {isUploading ? '업로드 중...' : '깜보 가르치기'}
                     <Send className="w-4 h-4" />
