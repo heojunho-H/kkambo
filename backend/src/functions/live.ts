@@ -32,21 +32,26 @@ export function attachLiveWS(server: Server): void {
     }
 
     const ai = new GoogleGenAI({ apiKey });
+
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let session: any = null;
+    let sessionResolve!: (s: any) => void;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sessionReady = new Promise<any>(resolve => { sessionResolve = resolve; });
 
     try {
-      session = await ai.live.connect({
-        model: 'gemini-2.0-flash-live-001',
+      const session = await ai.live.connect({
+        model: 'gemini-2.5-flash-native-audio-latest',
         config: {
-          responseModalities: [Modality.AUDIO, Modality.TEXT],
+          responseModalities: [Modality.AUDIO],
           systemInstruction: { parts: [{ text: KKAMBO_PERSONA }] },
           speechConfig: {
             voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
           },
+          outputAudioTranscription: {},
         },
         callbacks: {
           onopen: () => {
+            sessionResolve(session);
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'ready' }));
             }
@@ -55,13 +60,15 @@ export function attachLiveWS(server: Server): void {
           onmessage: (msg: any) => {
             if (ws.readyState !== WebSocket.OPEN) return;
 
+            // 오디오 트랜스크립트
+            if (msg.serverContent?.outputTranscription?.text) {
+              ws.send(JSON.stringify({ type: 'transcript', text: msg.serverContent.outputTranscription.text }));
+            }
+
             const parts: any[] = msg.serverContent?.modelTurn?.parts ?? [];
             for (const part of parts) {
               if (part.inlineData?.data) {
                 ws.send(JSON.stringify({ type: 'audio', data: part.inlineData.data }));
-              }
-              if (part.text) {
-                ws.send(JSON.stringify({ type: 'transcript', text: part.text }));
               }
             }
             if (msg.serverContent?.turnComplete) {
@@ -80,18 +87,18 @@ export function attachLiveWS(server: Server): void {
         },
       });
 
-      ws.on('message', (data: Buffer) => {
+      ws.on('message', async (data: Buffer) => {
         try {
           const msg: ClientMsg = JSON.parse(data.toString());
-          if (!session) return;
+          const s = await sessionReady;
 
           if (msg.type === 'audio') {
-            session.sendRealtimeInput({
+            s.sendRealtimeInput({
               audio: { data: msg.data, mimeType: 'audio/pcm;rate=16000' },
             });
           } else if (msg.type === 'context') {
             // 파일 컨텍스트 첫 메시지로 전달
-            session.sendClientContent({
+            s.sendClientContent({
               turns: [{
                 role: 'user',
                 parts: [{ text: `오늘 "${msg.fileName}" 파일에 대해 설명해줄게!` }],
@@ -103,8 +110,7 @@ export function attachLiveWS(server: Server): void {
       });
 
       ws.on('close', () => {
-        session?.close();
-        session = null;
+        session.close();
       });
 
     } catch (err) {
