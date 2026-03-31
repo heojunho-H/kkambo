@@ -162,7 +162,7 @@ export function attachLiveWS(server: Server): void {
 
     try {
       const session = await ai.live.connect({
-        model: 'gemini-2.0-flash-exp',
+        model: 'gemini-2.5-flash-preview-native-audio-12-17',
         config: {
           responseModalities: [Modality.AUDIO],
           systemInstruction: { parts: [{ text: KKAMBO_PERSONA }] },
