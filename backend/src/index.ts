@@ -10,9 +10,14 @@ import { attachLiveWS } from './functions/live.js';
 const app = express();
 const PORT = process.env.PORT || 8080;
 
-const allowedOrigins = process.env.FRONTEND_URL
-  ? process.env.FRONTEND_URL.split(',').map(s => s.trim())
-  : ['http://localhost:5173'];
+const allowedOrigins = [
+  'http://localhost:5173',
+  'http://localhost:4173',
+  'https://kkamboai.pages.dev',
+  ...(process.env.FRONTEND_URL
+    ? process.env.FRONTEND_URL.split(',').map(s => s.trim())
+    : []),
+];
 app.use(cors({ origin: allowedOrigins, credentials: true }));
 app.use(express.json());
 
