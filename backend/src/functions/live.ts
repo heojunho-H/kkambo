@@ -44,6 +44,7 @@ export function attachLiveWS(server: Server): void {
         config: {
           responseModalities: [Modality.AUDIO],
           systemInstruction: { parts: [{ text: KKAMBO_PERSONA }] },
+          inputAudioTranscription: {},
           outputAudioTranscription: {},
         },
         callbacks: {
@@ -56,7 +57,13 @@ export function attachLiveWS(server: Server): void {
           onmessage: (msg: any) => {
             if (ws.readyState !== WebSocket.OPEN) return;
 
-            // 오디오 트랜스크립트
+            // 사용자 입력 트랜스크립트 (마이크 음성 인식 확인용)
+            if (msg.serverContent?.inputTranscription?.text) {
+              console.log('[사용자 입력]', msg.serverContent.inputTranscription.text);
+              ws.send(JSON.stringify({ type: 'userTranscript', text: msg.serverContent.inputTranscription.text }));
+            }
+
+            // 깜보 오디오 트랜스크립트
             if (msg.serverContent?.outputTranscription?.text) {
               ws.send(JSON.stringify({ type: 'transcript', text: msg.serverContent.outputTranscription.text }));
             }

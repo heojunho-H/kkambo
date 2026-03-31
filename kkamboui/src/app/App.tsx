@@ -106,14 +106,19 @@ export default function App() {
   // ── 마이크 시작 ────────────────────────────────────────────
   const startMic = useCallback(async () => {
     try {
-      const stream = await navigator.mediaDevices.getUserMedia({ audio: true, video: false });
+      const stream = await navigator.mediaDevices.getUserMedia({
+        audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+        video: false,
+      });
       streamRef.current = stream;
 
       const ctx = new AudioContext({ sampleRate: 16000 });
       micCtxRef.current = ctx;
+      // suspended 상태일 수 있으므로 명시적으로 resume
+      await ctx.resume();
 
       const source = ctx.createMediaStreamSource(stream);
-      // @ts-expect-error — ScriptProcessorNode deprecated but supported
+      // eslint-disable-next-line @typescript-eslint/no-deprecated
       const processor = ctx.createScriptProcessor(2048, 1, 1);
       processorRef.current = processor;
 
@@ -124,8 +129,13 @@ export default function App() {
         ws.send(JSON.stringify({ type: 'audio', data: float32ToBase64(f32) }));
       };
 
+      // 에코 방지: 무음 GainNode를 통해 destination 연결
+      // (ScriptProcessorNode는 그래프에 연결되어야 onaudioprocess가 발생)
+      const silencer = ctx.createGain();
+      silencer.gain.value = 0;
       source.connect(processor);
-      processor.connect(ctx.destination);
+      processor.connect(silencer);
+      silencer.connect(ctx.destination);
       setIsRecording(true);
     } catch {
       setSessionState('error');
