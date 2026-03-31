@@ -104,11 +104,53 @@ export function attachLiveWS(server: Server): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     let sessionResolve!: (s: any) => void;
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const sessionReady = new Promise<any>(resolve => { sessionResolve = resolve; });
+    let sessionReject!: (err: unknown) => void;
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    const sessionReady = new Promise<any>((resolve, reject) => {
+      sessionResolve = resolve;
+      sessionReject = reject;
+    });
 
     let sessionClosed = false;
     const userTranscripts: string[] = [];
     const kkamboTranscripts: string[] = [];
+
+    // ws.on('message')를 connect() 이전에 등록해야 context 메시지 유실 방지
+    // (SDK의 onopen은 setup 메시지 전송 전에 호출되므로, 클라이언트가 'ready'를
+    //  받고 즉시 보내는 context 메시지가 connect() resolve 전에 도착할 수 있음)
+    ws.on('message', async (data: Buffer) => {
+      try {
+        const msg: ClientMsg = JSON.parse(data.toString());
+        // sessionReady가 reject되면 catch로 빠짐 — 연결 실패 시 자연스럽게 무시
+        const s = await sessionReady;
+
+        if (msg.type === 'audio') {
+          s.sendRealtimeInput({
+            audio: { data: msg.data, mimeType: 'audio/pcm;rate=16000' },
+          });
+        } else if (msg.type === 'context') {
+          // eslint-disable-next-line @typescript-eslint/no-explicit-any
+          const parts: any[] = [{ text: `오늘 "${msg.fileName}" 파일에 대해 설명해줄게!` }];
+          if (msg.fileUri && msg.mimeType) {
+            parts.push({ fileData: { fileUri: msg.fileUri, mimeType: msg.mimeType } });
+          }
+          s.sendClientContent({
+            turns: [{ role: 'user', parts }],
+            turnComplete: true,
+          });
+        } else if (msg.type === 'turnEnd') {
+          s.sendClientContent({ turnComplete: true });
+        }
+      } catch { /* JSON parse 오류 또는 세션 연결 실패 무시 */ }
+    });
+
+    ws.on('close', () => {
+      if (!sessionClosed) {
+        sessionClosed = true;
+        // sessionReady가 아직 resolve되지 않았을 수도 있으므로 .then() 사용
+        sessionReady.then(s => s.close()).catch(() => {});
+      }
+    });
 
     try {
       const session = await ai.live.connect({
@@ -118,9 +160,7 @@ export function attachLiveWS(server: Server): void {
           systemInstruction: { parts: [{ text: KKAMBO_PERSONA }] },
           inputAudioTranscription: {},
           outputAudioTranscription: {},
-          speechConfig: {
-            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
-          },
+          // native audio 모델은 TTS 음성 선택(speechConfig.voiceConfig)을 지원하지 않음
         },
         callbacks: {
           onopen: () => {
@@ -132,7 +172,6 @@ export function attachLiveWS(server: Server): void {
           onmessage: (msg: any) => {
             if (ws.readyState !== WebSocket.OPEN) return;
 
-            // 사용자 입력 트랜스크립트 (마이크 음성 인식 확인용)
             if (msg.serverContent?.inputTranscription?.text) {
               const text: string = msg.serverContent.inputTranscription.text;
               console.log('[사용자 입력]', text);
@@ -140,13 +179,13 @@ export function attachLiveWS(server: Server): void {
               ws.send(JSON.stringify({ type: 'userTranscript', text }));
             }
 
-            // 깜보 오디오 트랜스크립트
             if (msg.serverContent?.outputTranscription?.text) {
               const text: string = msg.serverContent.outputTranscription.text;
               kkamboTranscripts.push(text);
               ws.send(JSON.stringify({ type: 'transcript', text }));
             }
 
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
             const parts: any[] = msg.serverContent?.modelTurn?.parts ?? [];
             for (const part of parts) {
               if (part.inlineData?.data) {
@@ -155,7 +194,6 @@ export function attachLiveWS(server: Server): void {
             }
             if (msg.serverContent?.turnComplete) {
               ws.send(JSON.stringify({ type: 'turnComplete' }));
-              // 메트릭 평가 (비동기, non-blocking)
               if (userTranscripts.length > 0) {
                 evaluateMetrics(ai, [...userTranscripts], [...kkamboTranscripts]).then((metrics) => {
                   if (metrics && ws.readyState === WebSocket.OPEN) {
@@ -182,45 +220,11 @@ export function attachLiveWS(server: Server): void {
         },
       });
 
-      // connect()가 resolve된 후 session 확정 → 메시지 핸들러에서 안전하게 사용 가능
       sessionResolve(session);
-
-      ws.on('message', async (data: Buffer) => {
-        try {
-          const msg: ClientMsg = JSON.parse(data.toString());
-          const s = await sessionReady;
-
-          if (msg.type === 'audio') {
-            s.sendRealtimeInput({
-              audio: { data: msg.data, mimeType: 'audio/pcm;rate=16000' },
-            });
-          } else if (msg.type === 'context') {
-            // 파일 컨텍스트 첫 메시지로 전달
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const parts: any[] = [{ text: `오늘 "${msg.fileName}" 파일에 대해 설명해줄게!` }];
-            if (msg.fileUri && msg.mimeType) {
-              parts.push({ fileData: { fileUri: msg.fileUri, mimeType: msg.mimeType } });
-            }
-            s.sendClientContent({
-              turns: [{ role: 'user', parts }],
-              turnComplete: true,
-            });
-          } else if (msg.type === 'turnEnd') {
-            // 3초 정적 감지 → 깜보 응답 트리거
-            s.sendClientContent({ turnComplete: true });
-          }
-        } catch { /* JSON parse 오류 무시 */ }
-      });
-
-      ws.on('close', () => {
-        if (!sessionClosed) {
-          sessionClosed = true;
-          session.close();
-        }
-      });
 
     } catch (err) {
       console.error('Live 세션 시작 오류:', err);
+      sessionReject(err);
       if (ws.readyState === WebSocket.OPEN) {
         ws.send(JSON.stringify({ type: 'error', message: String(err) }));
         ws.close();
