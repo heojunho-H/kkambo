@@ -75,6 +75,7 @@ export default function App() {
   const isUserSpeakingRef = useRef(false);
   const isKkamboSpeakingRef = useRef(false);
   const isListeningRef = useRef(false);
+  const sessionIdRef = useRef<string | null>(null);
 
   // 말풍선 타이핑 (대기 상태용)
   const bubbleText = '안녕 나는 깜보야! 나를 학습시켜줘~';
@@ -207,6 +208,16 @@ export default function App() {
 
   // ── 세션 종료 ──────────────────────────────────────────────
   const stopSession = useCallback(() => {
+    // 세션 완료 상태로 업데이트 (fire-and-forget)
+    if (sessionIdRef.current) {
+      fetch(`/api/session/${sessionIdRef.current}`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ status: 'completed' }),
+      }).catch(() => {});
+      sessionIdRef.current = null;
+    }
+
     streamRef.current?.getTracks().forEach(t => t.stop());
     processorRef.current?.disconnect();
     micCtxRef.current?.close();
@@ -299,7 +310,16 @@ export default function App() {
       form.append('file', fileObj);
       const res = await fetch('/api/upload', { method: 'POST', body: form });
       if (!res.ok) throw new Error(await res.text());
-      const { fileName: uploadedName, fileUri, mimeType } = await res.json();
+      const { sessionId, fileName: uploadedName, fileUri, mimeType } = await res.json();
+
+      // 세션 생성
+      await fetch('/api/session', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ sessionId, fileName: uploadedName }),
+      }).catch(() => {}); // 세션 생성 실패해도 대화는 진행
+      sessionIdRef.current = sessionId;
+
       startSession(uploadedName, fileUri, mimeType);
     } catch (err) {
       console.error('[handleTeach] 업로드 오류:', err);
