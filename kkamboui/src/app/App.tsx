@@ -310,7 +310,10 @@ export default function App() {
       const form = new FormData();
       form.append('file', fileObj);
       const res = await fetch('/api/upload', { method: 'POST', body: form });
-      if (!res.ok) throw new Error(await res.text());
+      if (!res.ok) {
+        const body = await res.text().catch(() => '');
+        throw new Error(`업로드 실패 (${res.status}): ${body}`);
+      }
       const { sessionId, fileName: uploadedName, fileUri, mimeType } = await res.json();
 
       // 세션 생성

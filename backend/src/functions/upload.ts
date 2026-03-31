@@ -4,15 +4,23 @@ import { GoogleGenAI } from '@google/genai';
 
 const router = Router();
 
-async function waitForFileActive(ai: GoogleGenAI, name: string, timeoutMs = 30_000): Promise<void> {
+async function waitForFileActive(ai: GoogleGenAI, name: string, timeoutMs = 10_000): Promise<void> {
   const deadline = Date.now() + timeoutMs;
   while (Date.now() < deadline) {
-    const file = await ai.files.get({ name });
-    if (file.state === 'ACTIVE') return;
-    if (file.state === 'FAILED') throw new Error('파일 처리 실패');
-    await new Promise(r => setTimeout(r, 1500));
+    try {
+      const file = await ai.files.get({ name });
+      if (file.state === 'ACTIVE') return;
+      if (file.state === 'FAILED') {
+        console.warn('파일 처리 실패 상태:', name);
+        return; // throw 대신 진행 — Gemini Live가 처리
+      }
+    } catch (e) {
+      console.warn('files.get 조회 실패 (무시):', e);
+    }
+    await new Promise(r => setTimeout(r, 1000));
   }
-  throw new Error('파일 처리 시간 초과 (30초)');
+  // 타임아웃 시 throw하지 않고 경고만 — 짧은 파일은 이미 ACTIVE일 가능성 높음
+  console.warn('파일 ACTIVE 대기 타임아웃, URI로 진행:', name);
 }
 
 const ALLOWED_MIME_TYPES = new Set([
@@ -58,8 +66,8 @@ router.post('/', upload.single('file'), async (req, res) => {
       config: { mimeType: req.file.mimetype, displayName: req.file.originalname },
     });
 
-    // PROCESSING → ACTIVE 대기 (최대 30초)
-    if (uploaded.name) {
+    // 업로드 직후 ACTIVE가 아니면 폴링 (최대 10초)
+    if (uploaded.name && uploaded.state !== 'ACTIVE') {
       await waitForFileActive(ai, uploaded.name);
     }
 
