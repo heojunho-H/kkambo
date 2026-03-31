@@ -294,6 +294,9 @@ export default function App() {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
+    // 에러로 인한 WS 종료 여부 추적 — true이면 onclose에서 stopSession() 호출 안 함
+    let wsClosedByError = false;
+
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data) as {
         type: string; data?: string; text?: string; message?: string; // eslint-disable-next-line @typescript-eslint/no-explicit-any
@@ -316,15 +319,20 @@ export default function App() {
       } else if (msg.type === 'metrics' && msg.data) {
         setMetrics(msg.data as MetricsData);
       } else if (msg.type === 'error') {
+        wsClosedByError = true;
         console.error('Live 오류:', msg.message);
         setSessionState('error');
       }
     };
 
     ws.onclose = () => {
-      if (isListeningRef.current) stopSession();
+      // 에러로 인한 종료 시에는 stopSession() 호출 안 함 — 음성 화면에서 에러 상태 유지
+      if (isListeningRef.current && !wsClosedByError) stopSession();
     };
-    ws.onerror = () => setSessionState('error');
+    ws.onerror = () => {
+      wsClosedByError = true;
+      setSessionState('error');
+    };
   }, [startMic, enqueueAudio, stopSession]);
 
   const handleTeach = async () => {
