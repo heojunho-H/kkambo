@@ -50,6 +50,8 @@ export default function App() {
   const audioQueueRef = useRef<Float32Array[]>([]);
   const isPlayingRef = useRef(false);
   const isMutedRef = useRef(false);
+  const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const isUserSpeakingRef = useRef(false);
 
   // 말풍선 타이핑 (대기 상태용)
   const bubbleText = '안녕 나는 깜보야! 나를 학습시켜줘~';
@@ -126,10 +128,37 @@ export default function App() {
       const worklet = new AudioWorkletNode(ctx, 'mic-processor');
       processorRef.current = worklet;
 
+      const SILENCE_THRESHOLD = 0.01;
       worklet.port.onmessage = (e: MessageEvent<Float32Array>) => {
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN || isMutedRef.current) return;
-        ws.send(JSON.stringify({ type: 'audio', data: float32ToBase64(e.data) }));
+
+        // 3초 정적 감지: RMS 계산
+        const data = e.data;
+        let sumSq = 0;
+        for (let i = 0; i < data.length; i++) sumSq += data[i] * data[i];
+        const rms = Math.sqrt(sumSq / data.length);
+
+        if (rms > SILENCE_THRESHOLD) {
+          // 말하는 중 — 타이머 리셋
+          isUserSpeakingRef.current = true;
+          if (silenceTimerRef.current) {
+            clearTimeout(silenceTimerRef.current);
+            silenceTimerRef.current = null;
+          }
+        } else if (isUserSpeakingRef.current && !silenceTimerRef.current) {
+          // 방금 침묵 시작 — 3초 타이머 개시
+          silenceTimerRef.current = setTimeout(() => {
+            const currentWs = wsRef.current;
+            if (currentWs && currentWs.readyState === WebSocket.OPEN) {
+              currentWs.send(JSON.stringify({ type: 'turnEnd' }));
+            }
+            isUserSpeakingRef.current = false;
+            silenceTimerRef.current = null;
+          }, 3000);
+        }
+
+        ws.send(JSON.stringify({ type: 'audio', data: float32ToBase64(data) }));
       };
 
       // 에코 방지: 무음 GainNode를 통해 destination 연결
@@ -165,6 +194,11 @@ export default function App() {
     setIsKkamboSpeaking(false);
     setTranscript('');
     setUserTranscript('');
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+    isUserSpeakingRef.current = false;
     isMutedRef.current = false;
     setIsMuted(false);
     setSessionState('idle');

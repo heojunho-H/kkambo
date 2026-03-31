@@ -17,8 +17,9 @@ const KKAMBO_PERSONA = `
 `;
 
 type ClientMsg =
-  | { type: 'audio'; data: string }     // base64 PCM16 16kHz
-  | { type: 'context'; fileName: string }; // 파일명 컨텍스트
+  | { type: 'audio'; data: string }       // base64 PCM16 16kHz
+  | { type: 'context'; fileName: string } // 파일명 컨텍스트
+  | { type: 'turnEnd' };                  // 3초 정적 → 깜보 응답 트리거
 
 export function attachLiveWS(server: Server): void {
   const wss = new WebSocketServer({ server, path: '/ws/live' });
@@ -117,6 +118,9 @@ export function attachLiveWS(server: Server): void {
               }],
               turnComplete: true,
             });
+          } else if (msg.type === 'turnEnd') {
+            // 3초 정적 감지 → 깜보 응답 트리거
+            s.sendClientContent({ turnComplete: true });
           }
         } catch { /* JSON parse 오류 무시 */ }
       });
