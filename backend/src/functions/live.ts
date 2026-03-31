@@ -38,6 +38,8 @@ export function attachLiveWS(server: Server): void {
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     const sessionReady = new Promise<any>(resolve => { sessionResolve = resolve; });
 
+    let sessionClosed = false;
+
     try {
       const session = await ai.live.connect({
         model: 'gemini-3.1-flash-live-preview',
@@ -46,6 +48,9 @@ export function attachLiveWS(server: Server): void {
           systemInstruction: { parts: [{ text: KKAMBO_PERSONA }] },
           inputAudioTranscription: {},
           outputAudioTranscription: {},
+          speechConfig: {
+            voiceConfig: { prebuiltVoiceConfig: { voiceName: 'Kore' } },
+          },
         },
         callbacks: {
           onopen: () => {
@@ -79,6 +84,7 @@ export function attachLiveWS(server: Server): void {
             }
           },
           onclose: () => {
+            sessionClosed = true;
             if (ws.readyState === WebSocket.OPEN) ws.close();
           },
           onerror: (err: unknown) => {
@@ -116,7 +122,10 @@ export function attachLiveWS(server: Server): void {
       });
 
       ws.on('close', () => {
-        session.close();
+        if (!sessionClosed) {
+          sessionClosed = true;
+          session.close();
+        }
       });
 
     } catch (err) {
