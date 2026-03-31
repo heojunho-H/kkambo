@@ -204,9 +204,9 @@ export default function App() {
       setIsRecording(true);
     } catch (err) {
       console.error('[startMic] 오류:', err);
-      setSessionState('error');
+      stopSession();
     }
-  }, []);
+  }, [stopSession]);
 
   // ── 세션 종료 ──────────────────────────────────────────────
   const stopSession = useCallback(() => {
@@ -220,6 +220,9 @@ export default function App() {
       }).catch(() => {});
       sessionIdRef.current = null;
     }
+
+    // onclose 재진입 방지: ws.close() 전에 먼저 false로 설정
+    isListeningRef.current = false;
 
     streamRef.current?.getTracks().forEach(t => t.stop());
     processorRef.current?.disconnect();
@@ -246,7 +249,6 @@ export default function App() {
     }
     isUserSpeakingRef.current = false;
     isKkamboSpeakingRef.current = false;
-    isListeningRef.current = false;
     isMutedRef.current = false;
     setIsMuted(false);
     setSessionState('idle');
