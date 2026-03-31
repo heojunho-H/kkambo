@@ -305,6 +305,7 @@ export default function App() {
   const handleTeach = async () => {
     if (!fileName.trim() || !fileObj) return;
     setIsUploading(true);
+    setSessionState('idle');
     try {
       const form = new FormData();
       form.append('file', fileObj);
@@ -473,6 +474,12 @@ export default function App() {
                     <Send className="w-4 h-4" />
                   </button>
                 </div>
+                {sessionState === 'error' && (
+                  <p className="text-sm text-red-400 mt-3 text-center">
+                    업로드 또는 연결에 실패했습니다. 다시 시도해주세요.
+                  </p>
+                )}
+
                 <div className="flex flex-wrap items-center justify-center gap-2 mt-4">
                   {['📘 채찍효과란?', '📐 선형계획법 설명', '🧬 DNA 복제 과정'].map(chip => (
                     <button
@@ -511,13 +518,24 @@ export default function App() {
               className="flex flex-col items-center gap-6 pointer-events-auto"
             >
               {/* 상태 텍스트 */}
-              <p className="text-sm text-white/60">
-                {sessionState === 'connecting' && '깜보에 연결 중...'}
-                {sessionState === 'active' && isKkamboSpeaking && '깜보가 말하는 중...'}
-                {sessionState === 'active' && !isKkamboSpeaking && isRecording && !isMuted && '말해봐! 듣고 있어 👂'}
-                {sessionState === 'active' && isMuted && '음소거 중 🔇'}
-                {sessionState === 'error' && '연결 오류 — 다시 시도해줘'}
-              </p>
+              {sessionState === 'error' ? (
+                <div className="flex flex-col items-center gap-3">
+                  <p className="text-sm text-red-400">연결 오류가 발생했어요</p>
+                  <button
+                    onClick={stopSession}
+                    className="px-5 py-2 text-sm font-medium bg-white/15 hover:bg-white/25 backdrop-blur-md border border-white/20 rounded-full transition-colors text-white"
+                  >
+                    처음으로 돌아가기
+                  </button>
+                </div>
+              ) : (
+                <p className="text-sm text-white/60">
+                  {sessionState === 'connecting' && '깜보에 연결 중...'}
+                  {sessionState === 'active' && isKkamboSpeaking && '깜보가 말하는 중...'}
+                  {sessionState === 'active' && !isKkamboSpeaking && isRecording && !isMuted && '말해봐! 듣고 있어 👂'}
+                  {sessionState === 'active' && isMuted && '음소거 중 🔇'}
+                </p>
+              )}
 
               {/* 사용자 음성 인식 결과 */}
               {sessionState === 'active' && userTranscript && (

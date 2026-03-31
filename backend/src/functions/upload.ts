@@ -4,6 +4,17 @@ import { GoogleGenAI } from '@google/genai';
 
 const router = Router();
 
+async function waitForFileActive(ai: GoogleGenAI, name: string, timeoutMs = 30_000): Promise<void> {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    const file = await ai.files.get({ name });
+    if (file.state === 'ACTIVE') return;
+    if (file.state === 'FAILED') throw new Error('파일 처리 실패');
+    await new Promise(r => setTimeout(r, 1500));
+  }
+  throw new Error('파일 처리 시간 초과 (30초)');
+}
+
 const ALLOWED_MIME_TYPES = new Set([
   'application/pdf',
   'application/msword',
@@ -46,6 +57,11 @@ router.post('/', upload.single('file'), async (req, res) => {
       file: blob,
       config: { mimeType: req.file.mimetype, displayName: req.file.originalname },
     });
+
+    // PROCESSING → ACTIVE 대기 (최대 30초)
+    if (uploaded.name) {
+      await waitForFileActive(ai, uploaded.name);
+    }
 
     res.json({
       sessionId: crypto.randomUUID(),
