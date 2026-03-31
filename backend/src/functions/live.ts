@@ -91,6 +91,14 @@ type ClientMsg =
 export function attachLiveWS(server: Server): void {
   const wss = new WebSocketServer({ server, path: '/ws/live' });
 
+  // Railway 프록시 idle timeout 방지: 30초마다 ping
+  const pingInterval = setInterval(() => {
+    wss.clients.forEach((client) => {
+      if (client.readyState === WebSocket.OPEN) client.ping();
+    });
+  }, 30_000);
+  wss.on('close', () => clearInterval(pingInterval));
+
   wss.on('connection', async (ws: WebSocket, _req: IncomingMessage) => {
     const apiKey = process.env.GEMINI_API_KEY;
     if (!apiKey) {
@@ -154,13 +162,12 @@ export function attachLiveWS(server: Server): void {
 
     try {
       const session = await ai.live.connect({
-        model: 'gemini-2.5-flash-native-audio-preview-12-2025',
+        model: 'gemini-2.0-flash-live-001',
         config: {
           responseModalities: [Modality.AUDIO],
           systemInstruction: { parts: [{ text: KKAMBO_PERSONA }] },
           inputAudioTranscription: {},
           outputAudioTranscription: {},
-          // native audio 모델은 TTS 음성 선택(speechConfig.voiceConfig)을 지원하지 않음
         },
         callbacks: {
           onopen: () => {
