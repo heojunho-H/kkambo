@@ -1,5 +1,6 @@
 import { Router } from 'express';
 import multer from 'multer';
+import { GoogleGenAI } from '@google/genai';
 
 const router = Router();
 
@@ -26,19 +27,37 @@ const upload = multer({
 });
 
 // POST /api/upload
-router.post('/', upload.single('file'), (req, res) => {
+router.post('/', upload.single('file'), async (req, res) => {
   if (!req.file) {
     res.status(400).json({ error: '파일이 없습니다.' });
     return;
   }
 
-  // TODO: Firebase Storage에 업로드 후 AI 파싱 처리
-  res.json({
-    sessionId: crypto.randomUUID(),
-    fileName: req.file.originalname,
-    size: req.file.size,
-    mimeType: req.file.mimetype,
-  });
+  const apiKey = process.env.GEMINI_API_KEY;
+  if (!apiKey) {
+    res.status(500).json({ error: 'GEMINI_API_KEY 미설정' });
+    return;
+  }
+
+  try {
+    const ai = new GoogleGenAI({ apiKey });
+    const blob = new Blob([req.file.buffer], { type: req.file.mimetype });
+    const uploaded = await ai.files.upload({
+      file: blob,
+      config: { mimeType: req.file.mimetype, displayName: req.file.originalname },
+    });
+
+    res.json({
+      sessionId: crypto.randomUUID(),
+      fileName: req.file.originalname,
+      size: req.file.size,
+      mimeType: req.file.mimetype,
+      fileUri: uploaded.uri,
+    });
+  } catch (err) {
+    console.error('Gemini 파일 업로드 오류:', err);
+    res.status(500).json({ error: String(err) });
+  }
 });
 
 export { router as uploadRouter };

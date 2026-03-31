@@ -29,6 +29,8 @@ type SessionState = 'idle' | 'connecting' | 'active' | 'error';
 
 export default function App() {
   const [fileName, setFileName] = useState('');
+  const [fileObj, setFileObj] = useState<File | null>(null);
+  const [isUploading, setIsUploading] = useState(false);
   const [isListening, setIsListening] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
 
@@ -225,7 +227,7 @@ export default function App() {
   }, []);
 
   // ── 세션 시작 ──────────────────────────────────────────────
-  const startSession = useCallback(async (file: string) => {
+  const startSession = useCallback(async (file: string, fileUri?: string, mimeType?: string) => {
     setSessionState('connecting');
     isListeningRef.current = true;
     setIsListening(true);
@@ -243,8 +245,8 @@ export default function App() {
 
       if (msg.type === 'ready') {
         setSessionState('active');
-        // 파일명 컨텍스트 전달 후 마이크 시작
-        ws.send(JSON.stringify({ type: 'context', fileName: file }));
+        // 파일 컨텍스트 전달 후 마이크 시작
+        ws.send(JSON.stringify({ type: 'context', fileName: file, fileUri, mimeType }));
         startMic();
       } else if (msg.type === 'audio' && msg.data) {
         enqueueAudio(msg.data);
@@ -267,9 +269,22 @@ export default function App() {
     ws.onerror = () => setSessionState('error');
   }, [startMic, enqueueAudio, stopSession]);
 
-  const handleTeach = () => {
-    if (!fileName.trim()) return;
-    startSession(fileName);
+  const handleTeach = async () => {
+    if (!fileName.trim() || !fileObj) return;
+    setIsUploading(true);
+    try {
+      const form = new FormData();
+      form.append('file', fileObj);
+      const res = await fetch('/api/upload', { method: 'POST', body: form });
+      if (!res.ok) throw new Error(await res.text());
+      const { fileName: uploadedName, fileUri, mimeType } = await res.json();
+      startSession(uploadedName, fileUri, mimeType);
+    } catch (err) {
+      console.error('[handleTeach] 업로드 오류:', err);
+      setSessionState('error');
+    } finally {
+      setIsUploading(false);
+    }
   };
 
   // 말풍선 텍스트
@@ -390,7 +405,11 @@ export default function App() {
                   <input
                     type="file"
                     ref={fileInputRef}
-                    onChange={e => setFileName(e.target.files?.[0]?.name ?? '')}
+                    onChange={e => {
+                      const f = e.target.files?.[0] ?? null;
+                      setFileObj(f);
+                      setFileName(f?.name ?? '');
+                    }}
                     className="hidden"
                     accept=".pdf,.doc,.docx,.txt,.ppt,.pptx,.hwp,.md"
                   />
@@ -405,9 +424,10 @@ export default function App() {
                   </button>
                   <button
                     onClick={handleTeach}
-                    className="flex-shrink-0 px-5 md:px-6 py-3 bg-blue-500 hover:bg-blue-400 text-white rounded-xl font-medium text-sm flex items-center gap-2 transition-all hover:scale-[1.02] active:scale-95"
+                    disabled={isUploading}
+                    className="flex-shrink-0 px-5 md:px-6 py-3 bg-blue-500 hover:bg-blue-400 disabled:opacity-60 disabled:cursor-not-allowed text-white rounded-xl font-medium text-sm flex items-center gap-2 transition-all hover:scale-[1.02] active:scale-95"
                   >
-                    깜보 가르치기
+                    {isUploading ? '업로드 중...' : '깜보 가르치기'}
                     <Send className="w-4 h-4" />
                   </button>
                 </div>

@@ -17,9 +17,9 @@ const KKAMBO_PERSONA = `
 `;
 
 type ClientMsg =
-  | { type: 'audio'; data: string }       // base64 PCM16 16kHz
-  | { type: 'context'; fileName: string } // 파일명 컨텍스트
-  | { type: 'turnEnd' };                  // 3초 정적 → 깜보 응답 트리거
+  | { type: 'audio'; data: string }                                                   // base64 PCM16 16kHz
+  | { type: 'context'; fileName: string; fileUri?: string; mimeType?: string }        // 파일 컨텍스트
+  | { type: 'turnEnd' };                                                               // 3초 정적 → 깜보 응답 트리거
 
 export function attachLiveWS(server: Server): void {
   const wss = new WebSocketServer({ server, path: '/ws/live' });
@@ -111,11 +111,13 @@ export function attachLiveWS(server: Server): void {
             });
           } else if (msg.type === 'context') {
             // 파일 컨텍스트 첫 메시지로 전달
+            // eslint-disable-next-line @typescript-eslint/no-explicit-any
+            const parts: any[] = [{ text: `오늘 "${msg.fileName}" 파일에 대해 설명해줄게!` }];
+            if (msg.fileUri && msg.mimeType) {
+              parts.push({ fileData: { fileUri: msg.fileUri, mimeType: msg.mimeType } });
+            }
             s.sendClientContent({
-              turns: [{
-                role: 'user',
-                parts: [{ text: `오늘 "${msg.fileName}" 파일에 대해 설명해줄게!` }],
-              }],
+              turns: [{ role: 'user', parts }],
               turnComplete: true,
             });
           } else if (msg.type === 'turnEnd') {
