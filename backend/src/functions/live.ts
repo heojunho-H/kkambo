@@ -51,7 +51,6 @@ export function attachLiveWS(server: Server): void {
         },
         callbacks: {
           onopen: () => {
-            sessionResolve(session);
             if (ws.readyState === WebSocket.OPEN) {
               ws.send(JSON.stringify({ type: 'ready' }));
             }
@@ -86,6 +85,9 @@ export function attachLiveWS(server: Server): void {
           },
         },
       });
+
+      // connect()가 resolve된 후 session 확정 → 메시지 핸들러에서 안전하게 사용 가능
+      sessionResolve(session);
 
       ws.on('message', async (data: Buffer) => {
         try {
