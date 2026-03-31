@@ -210,7 +210,8 @@ export default function App() {
   const stopSession = useCallback(() => {
     // 세션 완료 상태로 업데이트 (fire-and-forget)
     if (sessionIdRef.current) {
-      fetch(`/api/session/${sessionIdRef.current}`, {
+      const _backendUrl = (import.meta.env.VITE_BACKEND_URL ?? '').replace(/\/$/, '');
+      fetch(`${_backendUrl}/api/session/${sessionIdRef.current}`, {
         method: 'PATCH',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ status: 'completed' }),
@@ -257,15 +258,30 @@ export default function App() {
     setIsMuted(next);
   }, []);
 
+  // ── 백엔드 URL 유틸 ────────────────────────────────────────
+  // VITE_BACKEND_URL=https://api.example.com  (프로덕션 배포 시 설정)
+  // 미설정 시 상대 경로 사용 (Vite 프록시 또는 동일 오리진 배포)
+  const backendUrl = (import.meta.env.VITE_BACKEND_URL ?? '').replace(/\/$/, '');
+  const apiUrl = (path: string) => `${backendUrl}${path}`;
+
   // ── 세션 시작 ──────────────────────────────────────────────
   const startSession = useCallback(async (file: string, fileUri?: string, mimeType?: string) => {
     setSessionState('connecting');
     isListeningRef.current = true;
     setIsListening(true);
 
-    const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
-    const wsUrl = import.meta.env.VITE_BACKEND_WS_URL
-      ?? `${proto}//${window.location.host}/ws/live`;
+    let wsUrl: string;
+    if (import.meta.env.VITE_BACKEND_WS_URL) {
+      wsUrl = import.meta.env.VITE_BACKEND_WS_URL;
+    } else if (import.meta.env.VITE_BACKEND_URL) {
+      wsUrl = import.meta.env.VITE_BACKEND_URL
+        .replace(/\/$/, '')
+        .replace(/^https:/, 'wss:')
+        .replace(/^http:/, 'ws:') + '/ws/live';
+    } else {
+      const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
+      wsUrl = `${proto}//${window.location.host}/ws/live`;
+    }
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
@@ -309,7 +325,7 @@ export default function App() {
     try {
       const form = new FormData();
       form.append('file', fileObj);
-      const res = await fetch('/api/upload', { method: 'POST', body: form });
+      const res = await fetch(apiUrl('/api/upload'), { method: 'POST', body: form });
       if (!res.ok) {
         const body = await res.text().catch(() => '');
         throw new Error(`업로드 실패 (${res.status}): ${body}`);
@@ -317,7 +333,7 @@ export default function App() {
       const { sessionId, fileName: uploadedName, fileUri, mimeType } = await res.json();
 
       // 세션 생성
-      await fetch('/api/session', {
+      await fetch(apiUrl('/api/session'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId, fileName: uploadedName }),
