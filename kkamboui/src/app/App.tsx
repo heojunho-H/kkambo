@@ -27,6 +27,24 @@ function base64ToFloat32(b64: string): Float32Array {
 
 type SessionState = 'idle' | 'connecting' | 'active' | 'error';
 
+export type MetricsData = {
+  keywordCoverage: number;
+  keywordCoverageNote: string;
+  conceptConnectivity: number;
+  conceptConnectivityNote: string;
+  feynmanIndex: number;
+  feynmanIndexNote: string;
+  feynmanIndexTag?: string | null;
+  explanationFluency: number;
+  explanationFluencyNote: string;
+  questionDefenseRate: number;
+  questionDefenseRateNote: string;
+  questionDefenseRateTag?: string | null;
+  kkamboUnderstanding: number;
+  kkamboUnderstandingNote: string;
+  alertMessage?: string | null;
+};
+
 export default function App() {
   const [fileName, setFileName] = useState('');
   const [fileObj, setFileObj] = useState<File | null>(null);
@@ -42,6 +60,7 @@ export default function App() {
 
   const [isMuted, setIsMuted] = useState(false);
   const [userTranscript, setUserTranscript] = useState('');
+  const [metrics, setMetrics] = useState<MetricsData | null>(null);
 
   // refs
   const wsRef = useRef<WebSocket | null>(null);
@@ -206,6 +225,7 @@ export default function App() {
     setIsKkamboSpeaking(false);
     setTranscript('');
     setUserTranscript('');
+    setMetrics(null);
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
@@ -240,8 +260,8 @@ export default function App() {
 
     ws.onmessage = (e) => {
       const msg = JSON.parse(e.data) as {
-        type: string; data?: string; text?: string; message?: string;
-      };
+        type: string; data?: string; text?: string; message?: string; // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      } & { [key: string]: any };
 
       if (msg.type === 'ready') {
         setSessionState('active');
@@ -257,6 +277,8 @@ export default function App() {
       } else if (msg.type === 'turnComplete') {
         // 깜보 발화 완료 — 3초 후 말풍선 비우기
         setTimeout(() => setTranscript(''), 3000);
+      } else if (msg.type === 'metrics' && msg.data) {
+        setMetrics(msg.data as MetricsData);
       } else if (msg.type === 'error') {
         console.error('Live 오류:', msg.message);
         setSessionState('error');
@@ -459,7 +481,7 @@ export default function App() {
             className="absolute inset-0 z-10 flex flex-col items-center justify-end pb-16 pointer-events-none"
           >
             {/* MetricsPanel */}
-            <MetricsPanel visible={isListening} />
+            <MetricsPanel visible={isListening} metrics={metrics} />
 
             {/* 상태 표시 */}
             <motion.div

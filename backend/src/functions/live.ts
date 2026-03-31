@@ -3,6 +3,73 @@ import { WebSocketServer, WebSocket } from 'ws';
 import type { Server } from 'http';
 import type { IncomingMessage } from 'http';
 
+type MetricsEval = {
+  keywordCoverage: number;
+  keywordCoverageNote: string;
+  conceptConnectivity: number;
+  conceptConnectivityNote: string;
+  feynmanIndex: number;
+  feynmanIndexNote: string;
+  feynmanIndexTag?: string | null;
+  explanationFluency: number;
+  explanationFluencyNote: string;
+  questionDefenseRate: number;
+  questionDefenseRateNote: string;
+  questionDefenseRateTag?: string | null;
+  kkamboUnderstanding: number;
+  kkamboUnderstandingNote: string;
+  alertMessage?: string | null;
+};
+
+async function evaluateMetrics(
+  ai: GoogleGenAI,
+  userTexts: string[],
+  kkamboTexts: string[],
+): Promise<MetricsEval | null> {
+  const prompt = `다음은 사용자가 AI 제자 '깜보'에게 학습 내용을 설명한 대화입니다.
+
+사용자 발화:
+${userTexts.join('\n')}
+
+깜보 발화:
+${kkamboTexts.join('\n')}
+
+위 대화를 분석하여 아래 메트릭을 0-100 정수 점수로 평가하고, 각 항목에 짧고 구체적인 한국어 설명(note)을 작성하세요.
+반드시 JSON 형식으로만 응답하세요. 다른 텍스트는 포함하지 마세요.
+
+{
+  "keywordCoverage": <0-100>,
+  "keywordCoverageNote": "<핵심 키워드 언급 상황, 예: '주요 키워드 18개 중 13개 언급'>",
+  "conceptConnectivity": <0-100>,
+  "conceptConnectivityNote": "<개념 연결 상황, 예: '상위 개념 간 연결 4건 중 2건 성립'>",
+  "feynmanIndex": <0-100>,
+  "feynmanIndexNote": "<비유/쉬운 설명 사용 여부, 예: '비유 3회 · 전공 용어 직접 인용 2회'>",
+  "feynmanIndexTag": "<점수에 따라 '우수'(>=80) | '양호'(>=60) | '개선 필요'(<60), 또는 null>",
+  "explanationFluency": <0-100>,
+  "explanationFluencyNote": "<설명의 흐름과 자연스러움>",
+  "questionDefenseRate": <0-100>,
+  "questionDefenseRateNote": "<깜보 질문에 대한 대응 현황>",
+  "questionDefenseRateTag": "<방어 건수 표시(예: '3/4'), 또는 null>",
+  "kkamboUnderstanding": <0-100>,
+  "kkamboUnderstandingNote": "<깜보의 이해도 상태 설명>",
+  "alertMessage": "<누락 개념이나 사실 오류가 있으면 짧게, 없으면 null>"
+}`;
+
+  try {
+    const response = await ai.models.generateContent({
+      model: 'gemini-2.0-flash',
+      contents: [{ role: 'user', parts: [{ text: prompt }] }],
+      config: { responseMimeType: 'application/json' },
+    });
+    const text = response.text;
+    if (!text) return null;
+    return JSON.parse(text) as MetricsEval;
+  } catch (err) {
+    console.error('메트릭 평가 오류:', err);
+    return null;
+  }
+}
+
 const KKAMBO_PERSONA = `
 너는 '깜보'야. 호기심 많고 귀여운 AI 학생이야.
 사용자가 개념을 음성으로 설명해주면, 열심히 듣고 이해하려고 노력해.
@@ -40,6 +107,8 @@ export function attachLiveWS(server: Server): void {
     const sessionReady = new Promise<any>(resolve => { sessionResolve = resolve; });
 
     let sessionClosed = false;
+    const userTranscripts: string[] = [];
+    const kkamboTranscripts: string[] = [];
 
     try {
       const session = await ai.live.connect({
@@ -65,13 +134,17 @@ export function attachLiveWS(server: Server): void {
 
             // 사용자 입력 트랜스크립트 (마이크 음성 인식 확인용)
             if (msg.serverContent?.inputTranscription?.text) {
-              console.log('[사용자 입력]', msg.serverContent.inputTranscription.text);
-              ws.send(JSON.stringify({ type: 'userTranscript', text: msg.serverContent.inputTranscription.text }));
+              const text: string = msg.serverContent.inputTranscription.text;
+              console.log('[사용자 입력]', text);
+              userTranscripts.push(text);
+              ws.send(JSON.stringify({ type: 'userTranscript', text }));
             }
 
             // 깜보 오디오 트랜스크립트
             if (msg.serverContent?.outputTranscription?.text) {
-              ws.send(JSON.stringify({ type: 'transcript', text: msg.serverContent.outputTranscription.text }));
+              const text: string = msg.serverContent.outputTranscription.text;
+              kkamboTranscripts.push(text);
+              ws.send(JSON.stringify({ type: 'transcript', text }));
             }
 
             const parts: any[] = msg.serverContent?.modelTurn?.parts ?? [];
@@ -82,6 +155,14 @@ export function attachLiveWS(server: Server): void {
             }
             if (msg.serverContent?.turnComplete) {
               ws.send(JSON.stringify({ type: 'turnComplete' }));
+              // 메트릭 평가 (비동기, non-blocking)
+              if (userTranscripts.length > 0) {
+                evaluateMetrics(ai, [...userTranscripts], [...kkamboTranscripts]).then((metrics) => {
+                  if (metrics && ws.readyState === WebSocket.OPEN) {
+                    ws.send(JSON.stringify({ type: 'metrics', data: metrics }));
+                  }
+                }).catch(() => {});
+              }
             }
           },
           onclose: () => {
