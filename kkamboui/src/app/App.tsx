@@ -52,6 +52,8 @@ export default function App() {
   const isMutedRef = useRef(false);
   const silenceTimerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
   const isUserSpeakingRef = useRef(false);
+  const isKkamboSpeakingRef = useRef(false);
+  const isListeningRef = useRef(false);
 
   // 말풍선 타이핑 (대기 상태용)
   const bubbleText = '안녕 나는 깜보야! 나를 학습시켜줘~';
@@ -86,11 +88,19 @@ export default function App() {
   const playNext = useCallback(() => {
     if (audioQueueRef.current.length === 0) {
       isPlayingRef.current = false;
+      isKkamboSpeakingRef.current = false;
       setIsKkamboSpeaking(false);
       return;
     }
     isPlayingRef.current = true;
+    isKkamboSpeakingRef.current = true;
     setIsKkamboSpeaking(true);
+    // 깜보가 말하기 시작하면 침묵 타이머 취소
+    if (silenceTimerRef.current) {
+      clearTimeout(silenceTimerRef.current);
+      silenceTimerRef.current = null;
+    }
+    isUserSpeakingRef.current = false;
 
     if (!playCtxRef.current) playCtxRef.current = new AudioContext();
     const ctx = playCtxRef.current;
@@ -146,7 +156,7 @@ export default function App() {
             clearTimeout(silenceTimerRef.current);
             silenceTimerRef.current = null;
           }
-        } else if (isUserSpeakingRef.current && !silenceTimerRef.current) {
+        } else if (isUserSpeakingRef.current && !silenceTimerRef.current && !isKkamboSpeakingRef.current) {
           // 방금 침묵 시작 — 3초 타이머 개시
           silenceTimerRef.current = setTimeout(() => {
             const currentWs = wsRef.current;
@@ -199,6 +209,8 @@ export default function App() {
       silenceTimerRef.current = null;
     }
     isUserSpeakingRef.current = false;
+    isKkamboSpeakingRef.current = false;
+    isListeningRef.current = false;
     isMutedRef.current = false;
     setIsMuted(false);
     setSessionState('idle');
@@ -215,6 +227,7 @@ export default function App() {
   // ── 세션 시작 ──────────────────────────────────────────────
   const startSession = useCallback(async (file: string) => {
     setSessionState('connecting');
+    isListeningRef.current = true;
     setIsListening(true);
 
     const proto = window.location.protocol === 'https:' ? 'wss:' : 'ws:';
@@ -249,10 +262,10 @@ export default function App() {
     };
 
     ws.onclose = () => {
-      if (sessionState !== 'idle') stopSession();
+      if (isListeningRef.current) stopSession();
     };
     ws.onerror = () => setSessionState('error');
-  }, [startMic, enqueueAudio, stopSession, sessionState]);
+  }, [startMic, enqueueAudio, stopSession]);
 
   const handleTeach = () => {
     if (!fileName.trim()) return;
