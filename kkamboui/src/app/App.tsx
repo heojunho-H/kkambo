@@ -25,6 +25,21 @@ function base64ToFloat32(b64: string): Float32Array {
   return f32;
 }
 
+function downsample(input: Float32Array, inputRate: number, outputRate: number): Float32Array {
+  if (inputRate === outputRate) return input;
+  const ratio = inputRate / outputRate;
+  const outputLength = Math.floor(input.length / ratio);
+  const output = new Float32Array(outputLength);
+  for (let i = 0; i < outputLength; i++) {
+    const srcIdx = i * ratio;
+    const lo = Math.floor(srcIdx);
+    const hi = Math.min(lo + 1, input.length - 1);
+    const frac = srcIdx - lo;
+    output[i] = input[lo] * (1 - frac) + input[hi] * frac;
+  }
+  return output;
+}
+
 type SessionState = 'idle' | 'connecting' | 'active' | 'error';
 
 export default function App() {
@@ -38,6 +53,9 @@ export default function App() {
   const [isKkamboSpeaking, setIsKkamboSpeaking] = useState(false);
   const [transcript, setTranscript] = useState('');
 
+  const [isMuted, setIsMuted] = useState(false);
+  const [userTranscript, setUserTranscript] = useState('');
+
   // refs
   const wsRef = useRef<WebSocket | null>(null);
   const micCtxRef = useRef<AudioContext | null>(null);
@@ -46,6 +64,7 @@ export default function App() {
   const playCtxRef = useRef<AudioContext | null>(null);
   const audioQueueRef = useRef<Float32Array[]>([]);
   const isPlayingRef = useRef(false);
+  const isMutedRef = useRef(false);
 
   // 말풍선 타이핑 (대기 상태용)
   const bubbleText = '안녕 나는 깜보야! 나를 학습시켜줘~';
@@ -112,21 +131,21 @@ export default function App() {
       });
       streamRef.current = stream;
 
-      const ctx = new AudioContext({ sampleRate: 16000 });
+      const ctx = new AudioContext();
       micCtxRef.current = ctx;
-      // suspended 상태일 수 있으므로 명시적으로 resume
       await ctx.resume();
 
       const source = ctx.createMediaStreamSource(stream);
       // eslint-disable-next-line @typescript-eslint/no-deprecated
-      const processor = ctx.createScriptProcessor(2048, 1, 1);
+      const processor = ctx.createScriptProcessor(4096, 1, 1);
       processorRef.current = processor;
 
       processor.onaudioprocess = (e: AudioProcessingEvent) => {
         const ws = wsRef.current;
-        if (!ws || ws.readyState !== WebSocket.OPEN) return;
+        if (!ws || ws.readyState !== WebSocket.OPEN || isMutedRef.current) return;
         const f32 = e.inputBuffer.getChannelData(0);
-        ws.send(JSON.stringify({ type: 'audio', data: float32ToBase64(f32) }));
+        const resampled = downsample(f32, ctx.sampleRate, 16000);
+        ws.send(JSON.stringify({ type: 'audio', data: float32ToBase64(resampled) }));
       };
 
       // 에코 방지: 무음 GainNode를 통해 destination 연결
@@ -161,8 +180,18 @@ export default function App() {
     setIsRecording(false);
     setIsKkamboSpeaking(false);
     setTranscript('');
+    setUserTranscript('');
+    isMutedRef.current = false;
+    setIsMuted(false);
     setSessionState('idle');
     setIsListening(false);
+  }, []);
+
+  // ── 음소거 토글 ────────────────────────────────────────────
+  const toggleMute = useCallback(() => {
+    const next = !isMutedRef.current;
+    isMutedRef.current = next;
+    setIsMuted(next);
   }, []);
 
   // ── 세션 시작 ──────────────────────────────────────────────
@@ -190,6 +219,8 @@ export default function App() {
         enqueueAudio(msg.data);
       } else if (msg.type === 'transcript' && msg.text) {
         setTranscript(msg.text);
+      } else if (msg.type === 'userTranscript' && msg.text) {
+        setUserTranscript(msg.text);
       } else if (msg.type === 'turnComplete') {
         // 깜보 발화 완료 — 3초 후 말풍선 비우기
         setTimeout(() => setTranscript(''), 3000);
@@ -390,14 +421,22 @@ export default function App() {
               <p className="text-sm text-white/60">
                 {sessionState === 'connecting' && '깜보에 연결 중...'}
                 {sessionState === 'active' && isKkamboSpeaking && '깜보가 말하는 중...'}
-                {sessionState === 'active' && !isKkamboSpeaking && isRecording && '말해봐! 듣고 있어 👂'}
+                {sessionState === 'active' && !isKkamboSpeaking && isRecording && !isMuted && '말해봐! 듣고 있어 👂'}
+                {sessionState === 'active' && isMuted && '음소거 중 🔇'}
                 {sessionState === 'error' && '연결 오류 — 다시 시도해줘'}
               </p>
+
+              {/* 사용자 음성 인식 결과 */}
+              {sessionState === 'active' && userTranscript && (
+                <p className="text-xs text-white/40 max-w-[280px] text-center truncate">
+                  "{userTranscript}"
+                </p>
+              )}
 
               {/* 마이크 버튼 */}
               <div className="relative flex items-center justify-center">
                 {/* 녹음 중 펄스 */}
-                {isRecording && (
+                {isRecording && !isMuted && (
                   <motion.div
                     animate={{ scale: [1, 1.4, 1], opacity: [0.4, 0, 0.4] }}
                     transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
@@ -415,14 +454,17 @@ export default function App() {
                 <motion.button
                   whileTap={{ scale: 0.92 }}
                   disabled={sessionState === 'connecting'}
+                  onClick={isRecording ? toggleMute : undefined}
                   className={`relative w-20 h-20 rounded-full flex items-center justify-center shadow-2xl transition-colors ${
-                    isRecording
-                      ? 'bg-red-500 hover:bg-red-400'
-                      : 'bg-white/20 backdrop-blur-md hover:bg-white/30 border border-white/20'
+                    isMuted
+                      ? 'bg-white/10 backdrop-blur-md border border-white/20 hover:bg-white/20'
+                      : isRecording
+                        ? 'bg-red-500 hover:bg-red-400'
+                        : 'bg-white/20 backdrop-blur-md hover:bg-white/30 border border-white/20'
                   } disabled:opacity-50`}
                 >
-                  {isRecording
-                    ? <MicOff className="w-8 h-8 text-white" />
+                  {isMuted
+                    ? <MicOff className="w-8 h-8 text-white/50" />
                     : <Mic className="w-8 h-8 text-white" />
                   }
                 </motion.button>
