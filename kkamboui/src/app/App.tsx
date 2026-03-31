@@ -156,6 +156,8 @@ export default function App() {
 
       await ctx.audioWorklet.addModule('/mic-processor.js');
 
+      if (ctx.state === 'closed') return;
+
       const source = ctx.createMediaStreamSource(stream);
       const worklet = new AudioWorkletNode(ctx, 'mic-processor');
       processorRef.current = worklet;

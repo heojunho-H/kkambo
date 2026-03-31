@@ -165,7 +165,8 @@ export function attachLiveWS(server: Server): void {
               }
             }
           },
-          onclose: () => {
+          onclose: (evt?: { code?: number; reason?: string }) => {
+            console.log('[Gemini Live] 세션 종료 — code:', evt?.code, 'reason:', evt?.reason);
             sessionClosed = true;
             if (ws.readyState === WebSocket.OPEN) ws.close();
           },
