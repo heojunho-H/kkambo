@@ -25,21 +25,6 @@ function base64ToFloat32(b64: string): Float32Array {
   return f32;
 }
 
-function downsample(input: Float32Array, inputRate: number, outputRate: number): Float32Array {
-  if (inputRate === outputRate) return input;
-  const ratio = inputRate / outputRate;
-  const outputLength = Math.floor(input.length / ratio);
-  const output = new Float32Array(outputLength);
-  for (let i = 0; i < outputLength; i++) {
-    const srcIdx = i * ratio;
-    const lo = Math.floor(srcIdx);
-    const hi = Math.min(lo + 1, input.length - 1);
-    const frac = srcIdx - lo;
-    output[i] = input[lo] * (1 - frac) + input[hi] * frac;
-  }
-  return output;
-}
-
 type SessionState = 'idle' | 'connecting' | 'active' | 'error';
 
 export default function App() {
@@ -59,7 +44,7 @@ export default function App() {
   // refs
   const wsRef = useRef<WebSocket | null>(null);
   const micCtxRef = useRef<AudioContext | null>(null);
-  const processorRef = useRef<ScriptProcessorNode | null>(null);
+  const processorRef = useRef<AudioWorkletNode | null>(null);
   const streamRef = useRef<MediaStream | null>(null);
   const playCtxRef = useRef<AudioContext | null>(null);
   const audioQueueRef = useRef<Float32Array[]>([]);
@@ -135,25 +120,23 @@ export default function App() {
       micCtxRef.current = ctx;
       await ctx.resume();
 
-      const source = ctx.createMediaStreamSource(stream);
-      // eslint-disable-next-line @typescript-eslint/no-deprecated
-      const processor = ctx.createScriptProcessor(4096, 1, 1);
-      processorRef.current = processor;
+      await ctx.audioWorklet.addModule('/mic-processor.js');
 
-      processor.onaudioprocess = (e: AudioProcessingEvent) => {
+      const source = ctx.createMediaStreamSource(stream);
+      const worklet = new AudioWorkletNode(ctx, 'mic-processor');
+      processorRef.current = worklet;
+
+      worklet.port.onmessage = (e: MessageEvent<Float32Array>) => {
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN || isMutedRef.current) return;
-        const f32 = e.inputBuffer.getChannelData(0);
-        const resampled = downsample(f32, ctx.sampleRate, 16000);
-        ws.send(JSON.stringify({ type: 'audio', data: float32ToBase64(resampled) }));
+        ws.send(JSON.stringify({ type: 'audio', data: float32ToBase64(e.data) }));
       };
 
       // 에코 방지: 무음 GainNode를 통해 destination 연결
-      // (ScriptProcessorNode는 그래프에 연결되어야 onaudioprocess가 발생)
       const silencer = ctx.createGain();
       silencer.gain.value = 0;
-      source.connect(processor);
-      processor.connect(silencer);
+      source.connect(worklet);
+      worklet.connect(silencer);
       silencer.connect(ctx.destination);
       setIsRecording(true);
     } catch {
