@@ -166,6 +166,8 @@ export function attachLiveWS(server: Server): void {
         config: {
           responseModalities: [Modality.AUDIO],
           systemInstruction: KKAMBO_PERSONA,
+          inputAudioTranscription: {},
+          outputAudioTranscription: {},
         },
         callbacks: {
           onopen: () => {
