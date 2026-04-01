@@ -62,6 +62,14 @@ export default function App() {
   const [userTranscript, setUserTranscript] = useState('');
   const [metrics, setMetrics] = useState<MetricsData | null>(null);
 
+  // 모바일 감지
+  const [isMobile, setIsMobile] = useState(() => window.innerWidth < 640);
+  useEffect(() => {
+    const handle = () => setIsMobile(window.innerWidth < 640);
+    window.addEventListener('resize', handle);
+    return () => window.removeEventListener('resize', handle);
+  }, []);
+
   // refs
   const wsRef = useRef<WebSocket | null>(null);
   const micCtxRef = useRef<AudioContext | null>(null);
@@ -117,7 +125,6 @@ export default function App() {
     isPlayingRef.current = true;
     isKkamboSpeakingRef.current = true;
     setIsKkamboSpeaking(true);
-    // 깜보가 말하기 시작하면 침묵 타이머 취소
     if (silenceTimerRef.current) {
       clearTimeout(silenceTimerRef.current);
       silenceTimerRef.current = null;
@@ -167,21 +174,18 @@ export default function App() {
         const ws = wsRef.current;
         if (!ws || ws.readyState !== WebSocket.OPEN || isMutedRef.current) return;
 
-        // 3초 정적 감지: RMS 계산
         const data = e.data;
         let sumSq = 0;
         for (let i = 0; i < data.length; i++) sumSq += data[i] * data[i];
         const rms = Math.sqrt(sumSq / data.length);
 
         if (rms > SILENCE_THRESHOLD) {
-          // 말하는 중 — 타이머 리셋
           isUserSpeakingRef.current = true;
           if (silenceTimerRef.current) {
             clearTimeout(silenceTimerRef.current);
             silenceTimerRef.current = null;
           }
         } else if (isUserSpeakingRef.current && !silenceTimerRef.current && !isKkamboSpeakingRef.current) {
-          // 방금 침묵 시작 — 3초 타이머 개시
           silenceTimerRef.current = setTimeout(() => {
             const currentWs = wsRef.current;
             if (currentWs && currentWs.readyState === WebSocket.OPEN) {
@@ -195,7 +199,6 @@ export default function App() {
         ws.send(JSON.stringify({ type: 'audio', data: float32ToBase64(data) }));
       };
 
-      // 에코 방지: 무음 GainNode를 통해 destination 연결
       const silencer = ctx.createGain();
       silencer.gain.value = 0;
       source.connect(worklet);
@@ -204,7 +207,6 @@ export default function App() {
       setIsRecording(true);
     } catch (err) {
       console.error('[startMic] 오류:', err);
-      // 오디오 셋업 실패 — ws 세션은 유지하고 오류 상태만 표시
       streamRef.current?.getTracks().forEach(t => t.stop());
       streamRef.current = null;
       micCtxRef.current?.close().catch(() => {});
@@ -215,7 +217,6 @@ export default function App() {
 
   // ── 세션 종료 ──────────────────────────────────────────────
   const stopSession = useCallback(() => {
-    // 세션 완료 상태로 업데이트 (fire-and-forget)
     if (sessionIdRef.current) {
       const _backendUrl = (import.meta.env.VITE_BACKEND_URL ?? '').replace(/\/$/, '');
       fetch(`${_backendUrl}/api/session/${sessionIdRef.current}`, {
@@ -226,7 +227,6 @@ export default function App() {
       sessionIdRef.current = null;
     }
 
-    // onclose 재진입 방지: ws.close() 전에 먼저 false로 설정
     isListeningRef.current = false;
 
     streamRef.current?.getTracks().forEach(t => t.stop());
@@ -268,8 +268,6 @@ export default function App() {
   }, []);
 
   // ── 백엔드 URL 유틸 ────────────────────────────────────────
-  // VITE_BACKEND_URL=https://api.example.com  (프로덕션 배포 시 설정)
-  // 미설정 시 상대 경로 사용 (Vite 프록시 또는 동일 오리진 배포)
   const backendUrl = (import.meta.env.VITE_BACKEND_URL ?? '').replace(/\/$/, '');
   const apiUrl = (path: string) => `${backendUrl}${path}`;
 
@@ -294,7 +292,6 @@ export default function App() {
     const ws = new WebSocket(wsUrl);
     wsRef.current = ws;
 
-    // 에러로 인한 WS 종료 여부 추적 — true이면 onclose에서 stopSession() 호출 안 함
     let wsClosedByError = false;
 
     ws.onmessage = (e) => {
@@ -304,7 +301,6 @@ export default function App() {
 
       if (msg.type === 'ready') {
         setSessionState('active');
-        // 파일 컨텍스트 전달 후 마이크 시작
         ws.send(JSON.stringify({ type: 'context', fileName: file, content }));
         startMic();
       } else if (msg.type === 'audio' && msg.data) {
@@ -314,7 +310,6 @@ export default function App() {
       } else if (msg.type === 'userTranscript' && msg.text) {
         setUserTranscript(msg.text);
       } else if (msg.type === 'turnComplete') {
-        // 깜보 발화 완료 — 3초 후 말풍선 비우기
         setTimeout(() => setTranscript(''), 3000);
       } else if (msg.type === 'metrics' && msg.data) {
         setMetrics(msg.data as MetricsData);
@@ -326,7 +321,6 @@ export default function App() {
     };
 
     ws.onclose = () => {
-      // 에러로 인한 종료 시에는 stopSession() 호출 안 함 — 음성 화면에서 에러 상태 유지
       if (isListeningRef.current && !wsClosedByError) stopSession();
     };
     ws.onerror = () => {
@@ -349,12 +343,11 @@ export default function App() {
       }
       const { sessionId, fileName: uploadedName, extractedText } = await res.json();
 
-      // 세션 생성
       await fetch(apiUrl('/api/session'), {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
         body: JSON.stringify({ sessionId, fileName: uploadedName }),
-      }).catch(() => {}); // 세션 생성 실패해도 대화는 진행
+      }).catch(() => {});
       sessionIdRef.current = sessionId;
 
       startSession(uploadedName, extractedText);
@@ -381,17 +374,26 @@ export default function App() {
         <motion.div
           animate={
             isListening
-              ? { x: -350, y: [200, 188, 200], scale: 1.45, rotateX: [0, 8, 0] }
+              ? isMobile
+                ? { x: 0, y: [10, 0, 10], scale: 1.05, rotateX: [0, 4, 0] }
+                : { x: -350, y: [200, 188, 200], scale: 1.45, rotateX: [0, 8, 0] }
               : { x: [0, 80, 80, -80, -80, 0] }
           }
           transition={
             isListening
-              ? {
-                  x: { duration: 1.2, ease: [0.16, 1, 0.3, 1] },
-                  scale: { duration: 1.2, ease: [0.16, 1, 0.3, 1] },
-                  y: { duration: 1.2, repeat: Infinity, ease: 'easeInOut', repeatDelay: 0.3 },
-                  rotateX: { duration: 1.2, repeat: Infinity, ease: 'easeInOut', repeatDelay: 0.3 },
-                }
+              ? isMobile
+                ? {
+                    x: { duration: 1.2, ease: [0.16, 1, 0.3, 1] },
+                    scale: { duration: 1.2, ease: [0.16, 1, 0.3, 1] },
+                    y: { duration: 2.0, repeat: Infinity, ease: 'easeInOut', repeatDelay: 0.5 },
+                    rotateX: { duration: 2.0, repeat: Infinity, ease: 'easeInOut', repeatDelay: 0.5 },
+                  }
+                : {
+                    x: { duration: 1.2, ease: [0.16, 1, 0.3, 1] },
+                    scale: { duration: 1.2, ease: [0.16, 1, 0.3, 1] },
+                    y: { duration: 1.2, repeat: Infinity, ease: 'easeInOut', repeatDelay: 0.3 },
+                    rotateX: { duration: 1.2, repeat: Infinity, ease: 'easeInOut', repeatDelay: 0.3 },
+                  }
               : { x: { duration: 10, repeat: Infinity, ease: 'easeInOut' } }
           }
           style={{ perspective: 800, transformOrigin: 'center 40%' }}
@@ -415,9 +417,17 @@ export default function App() {
                 animate={{ opacity: 1, scale: 1, y: 0 }}
                 exit={{ opacity: 0, scale: 0.85, y: 4 }}
                 transition={{ duration: 0.25 }}
-                className="absolute top-[20%] left-[58%] z-10 pointer-events-none"
+                className={`absolute z-10 pointer-events-none ${
+                  isMobile
+                    ? 'top-[16%] left-[54%]'
+                    : 'top-[20%] left-[58%]'
+                }`}
               >
-                <div className="relative bg-white text-black px-5 py-3 rounded-2xl shadow-lg text-[18px] font-medium max-w-[280px] leading-snug">
+                <div className={`relative bg-white text-black rounded-2xl shadow-lg font-medium leading-snug ${
+                  isMobile
+                    ? 'px-4 py-2.5 text-[14px] max-w-[200px]'
+                    : 'px-5 py-3 text-[18px] max-w-[280px]'
+                }`}>
                   {truncatedBubble}
                   {isKkamboSpeaking && (
                     <span className="inline-block w-[2px] h-[1em] bg-black/60 align-middle ml-1 animate-pulse" />
@@ -437,23 +447,23 @@ export default function App() {
         className="absolute inset-0 bg-gradient-to-b from-black via-transparent to-black z-0 pointer-events-none"
       />
       <motion.div
-        animate={{ opacity: isListening ? 0.15 : 0.6 }}
+        animate={{ opacity: isListening ? (isMobile ? 0.25 : 0.15) : 0.6 }}
         transition={{ duration: 1.2 }}
         className="absolute inset-0 bg-[radial-gradient(circle_at_center,transparent_0%,black_100%)] z-0 pointer-events-none"
       />
 
       {/* Navbar */}
-      <nav className="absolute top-0 w-full px-6 py-5 z-20 pointer-events-auto flex justify-between items-center">
+      <nav className="absolute top-0 w-full px-4 sm:px-6 py-4 sm:py-5 z-20 pointer-events-auto flex justify-between items-center">
         <div className="flex items-center gap-2 font-bold text-xl tracking-tighter text-white">
           <Bot className="w-6 h-6 text-blue-400" />
           <span>Kkambo</span>
         </div>
-        <div className="flex items-center gap-3">
-          <button className="px-5 py-2.5 text-sm font-medium bg-gradient-to-r from-yellow-500 to-amber-500 hover:from-yellow-400 hover:to-amber-400 text-black rounded-full transition-all flex items-center gap-1.5">
+        <div className="flex items-center gap-2 sm:gap-3">
+          <button className="hidden sm:flex px-5 py-2.5 text-sm font-medium bg-gradient-to-r from-yellow-500 to-amber-500 hover:from-yellow-400 hover:to-amber-400 text-black rounded-full transition-all items-center gap-1.5">
             <Sparkles className="w-4 h-4" />
             Premium
           </button>
-          <button className="px-5 py-2.5 text-sm font-medium bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/20 rounded-full transition-colors text-white">
+          <button className="px-3.5 sm:px-5 py-2 sm:py-2.5 text-xs sm:text-sm font-medium bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/20 rounded-full transition-colors text-white">
             로그인
           </button>
         </div>
@@ -470,17 +480,17 @@ export default function App() {
             className="relative z-10 flex flex-col items-center justify-center min-h-screen px-4 pointer-events-none"
           >
             <div className="text-center max-w-3xl mx-auto flex flex-col items-center w-full">
-              <h1 className="text-3xl md:text-5xl lg:text-[3.5rem] font-black tracking-tight mb-5 leading-tight text-gray-900">
+              <h1 className="text-2xl sm:text-5xl lg:text-[3.5rem] font-black tracking-tight mb-4 sm:mb-5 leading-tight text-gray-900">
                 가르치면서 배우는<br />
                 가장 똑똑한 학습법
               </h1>
-              <p className="text-sm md:text-lg text-gray-600 mb-10 max-w-xl mx-auto leading-relaxed">
+              <p className="text-xs sm:text-lg text-gray-600 mb-8 sm:mb-10 max-w-xl mx-auto leading-relaxed px-2">
                 눈으로만 읽는 공부는 끝.{' '}
                 나만의 AI 제자 깜보에게 설명하며 완벽하게 이해하세요.
               </p>
 
-              <div className="w-full max-w-2xl pointer-events-auto">
-                <div className="relative flex items-center bg-black/[0.04] backdrop-blur-xl border border-black/[0.1] rounded-2xl p-2 transition-all focus-within:border-blue-500/50 focus-within:shadow-[0_0_40px_rgba(59,130,246,0.12)]">
+              <div className="w-full max-w-2xl pointer-events-auto px-0 sm:px-0">
+                <div className="relative flex items-center bg-black/[0.04] backdrop-blur-xl border border-black/[0.1] rounded-2xl p-1.5 sm:p-2 transition-all focus-within:border-blue-500/50 focus-within:shadow-[0_0_40px_rgba(59,130,246,0.12)]">
                   <input
                     type="file"
                     ref={fileInputRef}
@@ -494,33 +504,33 @@ export default function App() {
                   />
                   <button
                     onClick={() => fileInputRef.current?.click()}
-                    className="flex-1 flex items-center gap-3 px-4 py-3 text-left"
+                    className="flex-1 flex items-center gap-2 sm:gap-3 px-3 sm:px-4 py-2.5 sm:py-3 text-left min-w-0"
                   >
-                    <Upload className="w-5 h-5 text-gray-400 flex-shrink-0" />
-                    <span className={fileName ? 'text-gray-900 text-sm' : 'text-gray-400 text-sm'}>
+                    <Upload className="w-4 h-4 sm:w-5 sm:h-5 text-gray-400 flex-shrink-0" />
+                    <span className={`text-xs sm:text-sm truncate ${fileName ? 'text-gray-900' : 'text-gray-400'}`}>
                       {fileName || '오늘 가르칠 파일을 업로드하세요'}
                     </span>
                   </button>
                   <button
                     onClick={handleTeach}
                     disabled={!fileObj || isUploading}
-                    className="flex-shrink-0 px-5 md:px-6 py-3 bg-blue-500 hover:bg-blue-400 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl font-medium text-sm flex items-center gap-2 transition-all hover:scale-[1.02] active:scale-95"
+                    className="flex-shrink-0 px-4 sm:px-6 py-2.5 sm:py-3 bg-blue-500 hover:bg-blue-400 disabled:opacity-40 disabled:cursor-not-allowed text-white rounded-xl font-medium text-xs sm:text-sm flex items-center gap-1.5 sm:gap-2 transition-all hover:scale-[1.02] active:scale-95 whitespace-nowrap"
                   >
                     {isUploading ? '업로드 중...' : '깜보 가르치기'}
-                    <Send className="w-4 h-4" />
+                    <Send className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                   </button>
                 </div>
                 {sessionState === 'error' && (
-                  <p className="text-sm text-red-400 mt-3 text-center">
+                  <p className="text-xs sm:text-sm text-red-400 mt-3 text-center">
                     업로드 또는 연결에 실패했습니다. 다시 시도해주세요.
                   </p>
                 )}
 
-                <div className="flex flex-wrap items-center justify-center gap-2 mt-4">
+                <div className="flex flex-wrap items-center justify-center gap-1.5 sm:gap-2 mt-3 sm:mt-4">
                   {['📘 채찍효과란?', '📐 선형계획법 설명', '🧬 DNA 복제 과정'].map(chip => (
                     <button
                       key={chip}
-                      className="px-3.5 py-1.5 text-xs text-gray-500 bg-black/[0.04] hover:bg-black/[0.08] border border-black/[0.07] rounded-full transition-colors"
+                      className="px-3 sm:px-3.5 py-1.5 text-[11px] sm:text-xs text-gray-500 bg-black/[0.04] hover:bg-black/[0.08] border border-black/[0.07] rounded-full transition-colors"
                     >
                       {chip}
                     </button>
@@ -541,17 +551,18 @@ export default function App() {
             animate={{ opacity: 1 }}
             exit={{ opacity: 0 }}
             transition={{ duration: 0.4 }}
-            className="absolute inset-0 z-10 flex flex-col items-center justify-end pb-16 pointer-events-none"
+            className="absolute inset-0 z-10 flex flex-col items-center justify-end pointer-events-none"
+            style={{ paddingBottom: 'max(3rem, env(safe-area-inset-bottom, 3rem))' }}
           >
             {/* MetricsPanel */}
-            <MetricsPanel visible={isListening} metrics={metrics} />
+            <MetricsPanel visible={isListening} metrics={metrics} isMobile={isMobile} />
 
             {/* 상태 표시 */}
             <motion.div
               initial={{ opacity: 0, y: 10 }}
               animate={{ opacity: 1, y: 0 }}
               transition={{ delay: 0.3 }}
-              className="flex flex-col items-center gap-6 pointer-events-auto"
+              className="flex flex-col items-center gap-4 sm:gap-6 pointer-events-auto pb-2"
             >
               {/* 상태 텍스트 */}
               {sessionState === 'error' ? (
@@ -565,7 +576,7 @@ export default function App() {
                   </button>
                 </div>
               ) : (
-                <p className="text-sm text-white/60">
+                <p className="text-xs sm:text-sm text-white/60">
                   {sessionState === 'connecting' && '깜보에 연결 중...'}
                   {sessionState === 'active' && isKkamboSpeaking && '깜보가 말하는 중...'}
                   {sessionState === 'active' && !isKkamboSpeaking && isRecording && !isMuted && '말해봐! 듣고 있어 👂'}
@@ -575,34 +586,32 @@ export default function App() {
 
               {/* 사용자 음성 인식 결과 */}
               {sessionState === 'active' && userTranscript && (
-                <p className="text-xs text-white/40 max-w-[280px] text-center truncate">
+                <p className="text-[11px] text-white/40 max-w-[260px] sm:max-w-[280px] text-center truncate px-4">
                   "{userTranscript}"
                 </p>
               )}
 
               {/* 마이크 버튼 */}
               <div className="relative flex items-center justify-center">
-                {/* 녹음 중 펄스 */}
                 {isRecording && !isMuted && (
                   <motion.div
                     animate={{ scale: [1, 1.4, 1], opacity: [0.4, 0, 0.4] }}
                     transition={{ duration: 1.5, repeat: Infinity, ease: 'easeInOut' }}
-                    className="absolute w-24 h-24 rounded-full bg-red-400"
+                    className="absolute w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-red-400"
                   />
                 )}
-                {/* 깜보 말하는 중 펄스 */}
                 {isKkamboSpeaking && (
                   <motion.div
                     animate={{ scale: [1, 1.3, 1], opacity: [0.3, 0, 0.3] }}
                     transition={{ duration: 1.2, repeat: Infinity, ease: 'easeInOut' }}
-                    className="absolute w-24 h-24 rounded-full bg-blue-400"
+                    className="absolute w-20 h-20 sm:w-24 sm:h-24 rounded-full bg-blue-400"
                   />
                 )}
                 <motion.button
                   whileTap={{ scale: 0.92 }}
                   disabled={sessionState === 'connecting'}
                   onClick={isRecording ? toggleMute : undefined}
-                  className={`relative w-20 h-20 rounded-full flex items-center justify-center shadow-2xl transition-colors ${
+                  className={`relative w-16 h-16 sm:w-20 sm:h-20 rounded-full flex items-center justify-center shadow-2xl transition-colors ${
                     isMuted
                       ? 'bg-white/10 backdrop-blur-md border border-white/20 hover:bg-white/20'
                       : isRecording
@@ -611,8 +620,8 @@ export default function App() {
                   } disabled:opacity-50`}
                 >
                   {isMuted
-                    ? <MicOff className="w-8 h-8 text-white/50" />
-                    : <Mic className="w-8 h-8 text-white" />
+                    ? <MicOff className="w-6 h-6 sm:w-8 sm:h-8 text-white/50" />
+                    : <Mic className="w-6 h-6 sm:w-8 sm:h-8 text-white" />
                   }
                 </motion.button>
               </div>
@@ -620,9 +629,9 @@ export default function App() {
               {/* 종료 버튼 */}
               <button
                 onClick={stopSession}
-                className="flex items-center gap-1.5 px-4 py-2 text-sm text-white/60 hover:text-white bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 rounded-full transition-colors"
+                className="flex items-center gap-1.5 px-4 py-2 text-xs sm:text-sm text-white/60 hover:text-white bg-white/10 hover:bg-white/20 backdrop-blur-md border border-white/10 rounded-full transition-colors"
               >
-                <X className="w-4 h-4" />
+                <X className="w-3.5 h-3.5 sm:w-4 sm:h-4" />
                 대화 종료
               </button>
             </motion.div>
