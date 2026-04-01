@@ -274,7 +274,7 @@ export default function App() {
   const apiUrl = (path: string) => `${backendUrl}${path}`;
 
   // ── 세션 시작 ──────────────────────────────────────────────
-  const startSession = useCallback(async (file: string, fileUri?: string, mimeType?: string) => {
+  const startSession = useCallback(async (file: string, content?: string) => {
     setSessionState('connecting');
     isListeningRef.current = true;
     setIsListening(true);
@@ -305,7 +305,7 @@ export default function App() {
       if (msg.type === 'ready') {
         setSessionState('active');
         // 파일 컨텍스트 전달 후 마이크 시작
-        ws.send(JSON.stringify({ type: 'context', fileName: file, fileUri, mimeType }));
+        ws.send(JSON.stringify({ type: 'context', fileName: file, content }));
         startMic();
       } else if (msg.type === 'audio' && msg.data) {
         enqueueAudio(msg.data);
@@ -347,7 +347,7 @@ export default function App() {
         const body = await res.text().catch(() => '');
         throw new Error(`업로드 실패 (${res.status}): ${body}`);
       }
-      const { sessionId, fileName: uploadedName, fileUri, mimeType } = await res.json();
+      const { sessionId, fileName: uploadedName, extractedText } = await res.json();
 
       // 세션 생성
       await fetch(apiUrl('/api/session'), {
@@ -357,7 +357,7 @@ export default function App() {
       }).catch(() => {}); // 세션 생성 실패해도 대화는 진행
       sessionIdRef.current = sessionId;
 
-      startSession(uploadedName, fileUri, mimeType);
+      startSession(uploadedName, extractedText);
     } catch (err) {
       console.error('[handleTeach] 업로드 오류:', err);
       setSessionState('error');

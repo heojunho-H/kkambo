@@ -1,4 +1,4 @@
-const TARGET_RATE = 16000;
+const TARGET_RATE = 24000;
 const CHUNK_SAMPLES = 4096; // native rate 기준 버퍼 크기
 
 class MicProcessor extends AudioWorkletProcessor {

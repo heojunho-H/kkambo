@@ -1,7 +1,6 @@
-import { GoogleGenAI, Modality } from '@google/genai';
-import { WebSocketServer, WebSocket } from 'ws';
+import WebSocket, { WebSocketServer } from 'ws';
 import type { Server } from 'http';
-import type { IncomingMessage } from 'http';
+import OpenAI from 'openai';
 
 type MetricsEval = {
   keywordCoverage: number;
@@ -22,7 +21,7 @@ type MetricsEval = {
 };
 
 async function evaluateMetrics(
-  ai: GoogleGenAI,
+  openai: OpenAI,
   userTexts: string[],
   kkamboTexts: string[],
 ): Promise<MetricsEval | null> {
@@ -56,12 +55,12 @@ ${kkamboTexts.join('\n')}
 }`;
 
   try {
-    const response = await ai.models.generateContent({
-      model: 'gemini-2.0-flash',
-      contents: [{ role: 'user', parts: [{ text: prompt }] }],
-      config: { responseMimeType: 'application/json' },
+    const response = await openai.chat.completions.create({
+      model: 'gpt-4o-mini',
+      messages: [{ role: 'user', content: prompt }],
+      response_format: { type: 'json_object' },
     });
-    const text = response.text;
+    const text = response.choices[0]?.message.content;
     if (!text) return null;
     return JSON.parse(text) as MetricsEval;
   } catch (err) {
@@ -84,9 +83,11 @@ const KKAMBO_PERSONA = `
 `;
 
 type ClientMsg =
-  | { type: 'audio'; data: string }                                                   // base64 PCM16 16kHz
-  | { type: 'context'; fileName: string; fileUri?: string; mimeType?: string }        // 파일 컨텍스트
-  | { type: 'turnEnd' };                                                               // 3초 정적 → 깜보 응답 트리거
+  | { type: 'audio'; data: string }
+  | { type: 'context'; fileName: string; content?: string }
+  | { type: 'turnEnd' };
+
+type OaiEvent = { type: string; [key: string]: unknown };
 
 export function attachLiveWS(server: Server): void {
   const wss = new WebSocketServer({ server, path: '/ws/live' });
@@ -99,143 +100,173 @@ export function attachLiveWS(server: Server): void {
   }, 30_000);
   wss.on('close', () => clearInterval(pingInterval));
 
-  wss.on('connection', async (ws: WebSocket, _req: IncomingMessage) => {
-    const apiKey = process.env.GEMINI_API_KEY;
+  wss.on('connection', (ws: WebSocket) => {
+    const apiKey = process.env.OPENAI_API_KEY;
     if (!apiKey) {
-      ws.send(JSON.stringify({ type: 'error', message: 'GEMINI_API_KEY 미설정' }));
+      ws.send(JSON.stringify({ type: 'error', message: 'OPENAI_API_KEY 미설정' }));
       ws.close();
       return;
     }
 
-    const ai = new GoogleGenAI({ apiKey });
-
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let sessionResolve!: (s: any) => void;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    let sessionReject!: (err: unknown) => void;
-    // eslint-disable-next-line @typescript-eslint/no-explicit-any
-    const sessionReady = new Promise<any>((resolve, reject) => {
-      sessionResolve = resolve;
-      sessionReject = reject;
-    });
-
-    let sessionClosed = false;
+    const openai = new OpenAI({ apiKey });
     const userTranscripts: string[] = [];
     const kkamboTranscripts: string[] = [];
+    let transcriptBuffer = '';
+    let readySent = false;
 
-    // ws.on('message')를 connect() 이전에 등록해야 context 메시지 유실 방지
-    // (SDK의 onopen은 setup 메시지 전송 전에 호출되므로, 클라이언트가 'ready'를
-    //  받고 즉시 보내는 context 메시지가 connect() resolve 전에 도착할 수 있음)
-    ws.on('message', async (data: Buffer) => {
+    // OpenAI Realtime WebSocket 연결
+    const oaiWs = new WebSocket(
+      'wss://api.openai.com/v1/realtime?model=gpt-4o-realtime-preview',
+      {
+        headers: {
+          Authorization: `Bearer ${apiKey}`,
+          'OpenAI-Beta': 'realtime=v1',
+        },
+      },
+    );
+
+    oaiWs.on('open', () => {
+      oaiWs.send(JSON.stringify({
+        type: 'session.update',
+        session: {
+          modalities: ['audio', 'text'],
+          instructions: KKAMBO_PERSONA,
+          voice: 'shimmer',
+          input_audio_format: 'pcm16',
+          output_audio_format: 'pcm16',
+          input_audio_transcription: { model: 'whisper-1' },
+          turn_detection: {
+            type: 'server_vad',
+            threshold: 0.5,
+            prefix_padding_ms: 300,
+            silence_duration_ms: 800,
+          },
+        },
+      }));
+    });
+
+    oaiWs.on('message', (rawData: Buffer) => {
+      if (ws.readyState !== WebSocket.OPEN) return;
+
+      let event: OaiEvent;
+      try {
+        event = JSON.parse(rawData.toString()) as OaiEvent;
+      } catch {
+        return;
+      }
+
+      switch (event.type) {
+        case 'session.updated':
+          if (!readySent) {
+            readySent = true;
+            ws.send(JSON.stringify({ type: 'ready' }));
+          }
+          break;
+
+        case 'response.created':
+          // 새 응답 시작 — 트랜스크립트 버퍼 초기화
+          transcriptBuffer = '';
+          break;
+
+        case 'response.audio.delta':
+          ws.send(JSON.stringify({ type: 'audio', data: event.delta }));
+          break;
+
+        case 'response.audio_transcript.delta': {
+          transcriptBuffer += (event.delta as string) ?? '';
+          ws.send(JSON.stringify({ type: 'transcript', text: transcriptBuffer }));
+          break;
+        }
+
+        case 'response.audio_transcript.done':
+          kkamboTranscripts.push((event.transcript as string) || transcriptBuffer);
+          transcriptBuffer = '';
+          break;
+
+        case 'conversation.item.input_audio_transcription.completed': {
+          const text = event.transcript as string;
+          userTranscripts.push(text);
+          ws.send(JSON.stringify({ type: 'userTranscript', text }));
+          break;
+        }
+
+        case 'response.done':
+          ws.send(JSON.stringify({ type: 'turnComplete' }));
+          if (userTranscripts.length > 0) {
+            evaluateMetrics(openai, [...userTranscripts], [...kkamboTranscripts])
+              .then((metrics) => {
+                if (metrics && ws.readyState === WebSocket.OPEN) {
+                  ws.send(JSON.stringify({ type: 'metrics', data: metrics }));
+                }
+              })
+              .catch(() => {});
+          }
+          break;
+
+        case 'error': {
+          const errMsg = (event.error as { message?: string })?.message ?? 'OpenAI Realtime 오류';
+          console.error('[OpenAI Realtime] 오류:', event.error);
+          ws.send(JSON.stringify({ type: 'error', message: errMsg }));
+          break;
+        }
+      }
+    });
+
+    oaiWs.on('close', (code, reason) => {
+      console.log('[OpenAI Realtime] 세션 종료 — code:', code, 'reason:', reason.toString());
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'error', message: 'OpenAI Realtime 세션이 종료되었습니다' }));
+        ws.close();
+      }
+    });
+
+    oaiWs.on('error', (err) => {
+      console.error('[OpenAI Realtime] WebSocket 오류:', err);
+      if (ws.readyState === WebSocket.OPEN) {
+        ws.send(JSON.stringify({ type: 'error', message: String(err) }));
+      }
+    });
+
+    // 클라이언트 → OpenAI 중계
+    ws.on('message', (data: Buffer) => {
       try {
         const msg: ClientMsg = JSON.parse(data.toString());
-        // sessionReady가 reject되면 catch로 빠짐 — 연결 실패 시 자연스럽게 무시
-        const s = await sessionReady;
+        if (oaiWs.readyState !== WebSocket.OPEN) return;
 
         if (msg.type === 'audio') {
-          s.sendRealtimeInput({
-            audio: { data: msg.data, mimeType: 'audio/pcm;rate=16000' },
-          });
+          oaiWs.send(JSON.stringify({
+            type: 'input_audio_buffer.append',
+            audio: msg.data,
+          }));
         } else if (msg.type === 'context') {
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          const parts: any[] = [{ text: `오늘 "${msg.fileName}" 파일에 대해 설명해줄게!` }];
-          if (msg.fileUri && msg.mimeType) {
-            parts.push({ fileData: { fileUri: msg.fileUri, mimeType: msg.mimeType } });
-          }
-          s.sendClientContent({
-            turns: [{ role: 'user', parts }],
-            turnComplete: true,
-          });
+          // 학습 자료를 시스템 지시사항에 주입 후 깜보 인사 유도
+          const docContext = msg.content
+            ? `\n\n오늘 학습 자료:\n${msg.content}`
+            : '';
+          oaiWs.send(JSON.stringify({
+            type: 'session.update',
+            session: { instructions: KKAMBO_PERSONA + docContext },
+          }));
+          oaiWs.send(JSON.stringify({
+            type: 'conversation.item.create',
+            item: {
+              type: 'message',
+              role: 'user',
+              content: [{
+                type: 'input_text',
+                text: `"${msg.fileName}" 파일을 업로드했어. 이 내용을 바탕으로 나한테 설명 듣고 질문할 준비해줘!`,
+              }],
+            },
+          }));
+          oaiWs.send(JSON.stringify({ type: 'response.create' }));
         } else if (msg.type === 'turnEnd') {
-          s.sendClientContent({ turnComplete: true });
+          // server_vad가 자동으로 턴을 처리하므로 클라이언트 명시적 커밋은 무시
         }
-      } catch { /* JSON parse 오류 또는 세션 연결 실패 무시 */ }
+      } catch { /* JSON parse 오류 무시 */ }
     });
 
     ws.on('close', () => {
-      if (!sessionClosed) {
-        sessionClosed = true;
-        // sessionReady가 아직 resolve되지 않았을 수도 있으므로 .then() 사용
-        sessionReady.then(s => s.close()).catch(() => {});
-      }
+      if (oaiWs.readyState === WebSocket.OPEN) oaiWs.close();
     });
-
-    try {
-      const session = await ai.live.connect({
-        model: 'gemini-3.1-flash-live-preview',
-        config: {
-          responseModalities: [Modality.AUDIO],
-          systemInstruction: KKAMBO_PERSONA,
-          inputAudioTranscription: {},
-          outputAudioTranscription: {},
-        },
-        callbacks: {
-          onopen: () => {
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'ready' }));
-            }
-          },
-          // eslint-disable-next-line @typescript-eslint/no-explicit-any
-          onmessage: (msg: any) => {
-            if (ws.readyState !== WebSocket.OPEN) return;
-
-            if (msg.serverContent?.inputTranscription?.text) {
-              const text: string = msg.serverContent.inputTranscription.text;
-              console.log('[사용자 입력]', text);
-              userTranscripts.push(text);
-              ws.send(JSON.stringify({ type: 'userTranscript', text }));
-            }
-
-            if (msg.serverContent?.outputTranscription?.text) {
-              const text: string = msg.serverContent.outputTranscription.text;
-              kkamboTranscripts.push(text);
-              ws.send(JSON.stringify({ type: 'transcript', text }));
-            }
-
-            // eslint-disable-next-line @typescript-eslint/no-explicit-any
-            const parts: any[] = msg.serverContent?.modelTurn?.parts ?? [];
-            for (const part of parts) {
-              if (part.inlineData?.data) {
-                ws.send(JSON.stringify({ type: 'audio', data: part.inlineData.data }));
-              }
-            }
-            if (msg.serverContent?.turnComplete) {
-              ws.send(JSON.stringify({ type: 'turnComplete' }));
-              if (userTranscripts.length > 0) {
-                evaluateMetrics(ai, [...userTranscripts], [...kkamboTranscripts]).then((metrics) => {
-                  if (metrics && ws.readyState === WebSocket.OPEN) {
-                    ws.send(JSON.stringify({ type: 'metrics', data: metrics }));
-                  }
-                }).catch(() => {});
-              }
-            }
-          },
-          onclose: (evt?: { code?: number; reason?: string }) => {
-            console.log('[Gemini Live] 세션 종료 — code:', evt?.code, 'reason:', evt?.reason);
-            sessionClosed = true;
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'error', message: 'Gemini Live 세션이 종료되었습니다' }));
-              ws.close();
-            }
-          },
-          onerror: (err: unknown) => {
-            console.error('Gemini Live 오류:', err);
-            if (ws.readyState === WebSocket.OPEN) {
-              ws.send(JSON.stringify({ type: 'error', message: String(err) }));
-            }
-          },
-        },
-      });
-
-      sessionResolve(session);
-
-    } catch (err) {
-      console.error('Live 세션 시작 오류:', err);
-      sessionReject(err);
-      if (ws.readyState === WebSocket.OPEN) {
-        ws.send(JSON.stringify({ type: 'error', message: String(err) }));
-        ws.close();
-      }
-    }
   });
 }
